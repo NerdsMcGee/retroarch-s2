@@ -1,0 +1,29 @@
+diff --git a/src/os/libretro/Makefile b/src/os/libretro/Makefile
+index 12459cb..9db7804 100644
+--- a/src/os/libretro/Makefile
++++ b/src/os/libretro/Makefile
+@@ -179,6 +179,24 @@ else ifeq ($(platform), libnx)
+ # Platform affix = classic_<ISA>_<µARCH>
+ # Help at https://modmyclassic.com/comp
+ 
++# (armv7 a7, hard point, neon based) ###
++# NESC, SNESC, C64 mini
++# libounce (Switch 2)
++else ifeq ($(platform), libounce)
++   include $(DEVKITPRO)/libounce/switch2_rules
++   TARGET := $(TARGET_NAME)_libretro_libnx.a
++   DEFINES := -DSWITCH=1 -D__SWITCH__ -D__SWITCH2__ -DARM
++   # -std=c++23 defines __STRICT_ANSI__, which is what newlib reads to decide
++   # whether POSIX names exist at all - and libretro.cxx calls strdup. devkitA64
++   # has it; the header just will not declare it without this.
++   CXXFLAGS += $(DEFINES) -D_GNU_SOURCE -fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -specs=$(LIBNX)/switch.specs
++   CXXFLAGS += -march=armv8-a -mtune=cortex-a57 -mtp=soft -mcpu=cortex-a57+crc+fp+simd -ffast-math $(ASFLAGS)
++   STATIC_LINKING = 1
++
++# Classic Platforms ####################
++# Platform affix = classic_<ISA>_<µARCH>
++# Help at https://modmyclassic.com/comp
++
+ # (armv7 a7, hard point, neon based) ###
+ # NESC, SNESC, C64 mini
+ else ifeq ($(platform), classic_armv7_a7)

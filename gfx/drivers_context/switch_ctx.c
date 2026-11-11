@@ -30,14 +30,18 @@
 /* TODO/FIXME - global referenced */
 extern bool platform_switch_has_focus;
 
+extern void sw2_trace(const char *m);
+
 void switch_ctx_destroy(void *data)
 {
     switch_ctx_data_t *ctx_nx = (switch_ctx_data_t *)data;
+    sw2_trace("ctx_destroy");
 
     if (ctx_nx)
     {
 #ifdef HAVE_EGL
         egl_destroy(&ctx_nx->egl);
+        sw2_trace("egl_destroyed");
 #endif
         free(ctx_nx);
     }
@@ -58,6 +62,7 @@ static void switch_ctx_get_video_size(void *data,
    }
 }
 
+extern void sw2_trace(const char *m);
 static void *switch_ctx_init(void *video_driver)
 {
 #ifdef HAVE_EGL
@@ -68,6 +73,9 @@ static void *switch_ctx_init(void *video_driver)
         EGL_GREEN_SIZE, 8,
         EGL_RED_SIZE, 8,
         EGL_ALPHA_SIZE, 8,
+#ifdef HAVE_OPENGLES
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+#endif
         EGL_NONE};
 #endif
 
@@ -91,10 +99,12 @@ static void *switch_ctx_init(void *video_driver)
     setenv("NV50_PROG_CHIPSET", "0x120", 1);
 #endif
 
+    sw2_trace("ctx_init");
     /* Needs to be here */
     ctx_nx->win = nwindowGetDefault();
     nwindowSetDimensions(ctx_nx->win, 1920, 1080);
 
+    sw2_trace("pre-egl_init");
 #ifdef HAVE_EGL
     if (!egl_init_context(&ctx_nx->egl, EGL_NONE, EGL_DEFAULT_DISPLAY,
                           &major, &minor, &n, attribs, NULL))
@@ -104,6 +114,7 @@ static void *switch_ctx_init(void *video_driver)
     }
 #endif
 
+    sw2_trace("egl_init ok");
     return ctx_nx;
 
 error:
@@ -142,10 +153,12 @@ static bool switch_ctx_set_video_mode(void *data,
     switch_ctx_data_t *ctx_nx = (switch_ctx_data_t *)data;
     unsigned win_dims         = 0;
 
+    sw2_trace("set_video_mode");
     switch_ctx_get_video_size(data, &win_dims);
 
     ctx_nx->refresh_rate = 60;
 
+    sw2_trace("pre-create_context");
 #ifdef HAVE_EGL
     if (!egl_create_context(&ctx_nx->egl, contextAttributeList))
     {
@@ -154,11 +167,13 @@ static bool switch_ctx_set_video_mode(void *data,
     }
 #endif
 
+    sw2_trace("pre-create_surface");
 #ifdef HAVE_EGL
     if (!egl_create_surface(&ctx_nx->egl, ctx_nx->win))
         goto error;
 #endif
 
+    sw2_trace("surface ok");
     nwindowSetCrop(ctx_nx->win, 0, 1080 - VIDEO_SCALE_H(win_dims),
           VIDEO_SCALE_W(win_dims), 1080);
 
@@ -174,14 +189,24 @@ static void switch_ctx_input_driver(void *data,
 {
 }
 
+#ifdef HAVE_OPENGLES
+static enum gfx_ctx_api switch_ctx_get_api(void *data) { return GFX_CTX_OPENGL_ES_API; }
+#else
 static enum gfx_ctx_api switch_ctx_get_api(void *data) { return GFX_CTX_OPENGL_API; }
+#endif
 
 static bool switch_ctx_bind_api(void *data,
       enum gfx_ctx_api api, unsigned major, unsigned minor)
 {
+    sw2_trace("bind_api");
     if (api == GFX_CTX_OPENGL_API)
         if (egl_bind_api(EGL_OPENGL_API))
             return true;
+#ifdef HAVE_OPENGLES
+    if (api == GFX_CTX_OPENGL_ES_API)
+        if (egl_bind_api(EGL_OPENGL_ES_API))
+            return true;
+#endif
     return false;
 }
 
@@ -199,6 +224,8 @@ static void switch_ctx_set_swap_interval(void *data, int swap_interval)
 static void switch_ctx_swap_buffers(void *data)
 {
 #ifdef HAVE_EGL
+    static int n;
+    if (n < 3) { n++; sw2_trace("swap_buffers"); }
     switch_ctx_data_t *ctx_nx = (switch_ctx_data_t*)data;
     egl_swap_buffers(&ctx_nx->egl);
 #endif

@@ -1,0 +1,28 @@
+diff --git a/Makefile.libretro b/Makefile.libretro
+index 5b90d40..c772df0 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -341,6 +341,23 @@ else ifeq ($(platform), libnx)
+     PLATFORM_DEFINES += -DARM -march=armv8-a -mtune=cortex-a57 -mtp=soft
+     STATIC_LINKING = 1
+ 
++# Nintendo Switch 2 (libounce)
++else ifeq ($(platform), libounce)
++    include $(DEVKITPRO)/libounce/switch2_rules
++    EXT=a
++    WANT_32BPP := 1
++    TARGET := $(TARGET_NAME)_libretro_libnx.$(EXT)
++    DEFINES := -DSWITCH=1 -U__linux__ -U__linux -DRARCH_INTERNAL
++    CFLAGS	:=	 $(DEFINES) -g \
++                -O2 \
++				-fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -Wl,--allow-multiple-definition -specs=$(LIBNX)/switch.specs
++    CFLAGS += $(INCDIRS)
++    CFLAGS	+=	$(INCLUDE)  -D__SWITCH__ -DHAVE_LIBNX -D__SWITCH2__
++    CXXFLAGS := $(ASFLAGS) $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
++    CFLAGS += -std=gnu11
++    PLATFORM_DEFINES += -DARM -march=armv8-a -mtune=cortex-a57 -mtp=soft
++    STATIC_LINKING = 1
++
+ # Classic Platforms ####################
+ # Platform affix = classic_<ISA>_<µARCH>
+ # Help at https://modmyclassic.com/comp

@@ -1,0 +1,28 @@
+diff --git a/Makefile.libretro b/Makefile.libretro
+index ee08bc3..118fd65 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -521,6 +521,23 @@ else ifeq ($(platform), libnx)
+ 	STATIC_LINKING = 1
+ 	STATIC_LINKING_LINK=1
+ 
++# Windows MSVC 2003 Xbox 1
++# libounce (Switch 2)
++else ifeq ($(platform), libounce)
++	include $(DEVKITPRO)/libounce/switch2_rules
++	EXT=a
++	TARGET := $(TARGET_NAME)_libretro_libnx.$(EXT)
++	DEFINES :=  -DSWITCH=1 -U__linux__ -U__linux -DRARCH_INTERNAL
++	CFLAGS :=   $(DEFINES) -g \
++				-O3 \
++				-fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -Wl,--allow-multiple-definition -specs=$(LIBNX)/switch.specs
++	CFLAGS += $(INCDIRS)
++	CFLAGS	+=	$(INCLUDE)  -D__SWITCH__ -D__SWITCH2__ -DARM -march=armv8-a -mtune=cortex-a57 -mtp=soft
++	CXXFLAGS := $(ASFLAGS) $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
++	CFLAGS += -std=gnu11
++	STATIC_LINKING = 1
++	STATIC_LINKING_LINK=1
++
+ # Windows MSVC 2003 Xbox 1
+ else ifeq ($(platform), xbox1_msvc2003)
+ TARGET := $(TARGET_NAME)_libretro_xdk1.lib

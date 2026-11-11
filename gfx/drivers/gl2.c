@@ -390,6 +390,7 @@ typedef struct __GLsync *GLsync;
 
 /* Forward declaration for lazy init in read_viewport */
 static bool gl2_init_pbo_readback(gl2_t *gl);
+extern void sw2_trace(const char *m);
 static void gl2_free_pbo_readback(gl2_t *gl);
 
 #if defined(HAVE_PSGL)
@@ -5574,6 +5575,7 @@ static void gl2_frame_textures_remake(gl2_t *gl)
 #ifdef GL2_KMS_FRAMES
    gl2_kms_frames_drop(gl);
 #endif
+   sw2_trace("gl2_free: del textures");
    glDeleteTextures(gl->textures, gl->texture);
    gl->tex_index = 0;
    gl2_init_textures(gl);
@@ -8054,6 +8056,7 @@ static void gl2_deinit_chain(gl2_t *gl)
 static void gl2_free(void *data)
 {
    gl2_t *gl = (gl2_t*)data;
+   sw2_trace("gl2_free");
    if (!gl)
       return;
 
@@ -8069,7 +8072,9 @@ static void gl2_free(void *data)
             gl->renderchain_data);
 
 
+   sw2_trace("gl2_free: shader deinit");
    gl->shader->deinit(gl->shader_data);
+   sw2_trace("gl2_free: shader deinit done");
 
    gl2_scrgb_deinit(gl);
 #ifdef GL2_VIEWS
@@ -8117,6 +8122,7 @@ static void gl2_free(void *data)
 #ifdef HAVE_GLSL
    gl2_free_meshes(gl);
 #endif
+   sw2_trace("gl2_free: meshes done");
 
 #if defined(HAVE_PSGL)
    glBindBuffer(GL_TEXTURE_REFERENCE_BUFFER_SCE, 0);
@@ -8141,15 +8147,21 @@ static void gl2_free(void *data)
    }
 #endif
 
+   sw2_trace("gl2_free: pre-deinit_fbo");
    gl2_renderchain_deinit_fbo(gl, (gl2_renderchain_data_t*)gl->renderchain_data);
    gl2_renderchain_deinit_hw_render(gl, (gl2_renderchain_data_t*)gl->renderchain_data);
+   sw2_trace("gl2_free: pre-deinit_chain");
    gl2_deinit_chain(gl);
+   sw2_trace("gl2_free: pre-ctx-destroy");
 
    if (gl->ctx_driver && gl->ctx_driver->destroy)
       gl->ctx_driver->destroy(gl->ctx_data);
+   sw2_trace("gl2_free: pre-ctx-free");
    video_context_driver_free();
+   sw2_trace("gl2_free: pre-resources");
 
    gl2_destroy_resources(gl);
+   sw2_trace("gl2_free: done");
 }
 
 static void gl2_set_nonblock_state(
@@ -8730,17 +8742,21 @@ static void *gl2_init(const video_info_t *video)
          || !gl->ctx_driver->set_video_mode(gl->ctx_data, win_dims,
             (video->fullscreen || force_fullscreen)))
       goto error;
+   sw2_trace("gl2: pre-resolve");
 #if !defined(RARCH_CONSOLE) || defined(HAVE_LIBNX)
    rglgen_resolve_symbols(ctx_driver->get_proc_address);
 #endif
+   sw2_trace("gl2: resolved");
 
    /* Clear out potential error flags in case we use cached context. */
+   sw2_trace("gl2: pre-glGetError");
    glGetError();
 
    vendor   = (const char*)glGetString(GL_VENDOR);
    renderer = (const char*)glGetString(GL_RENDERER);
    version  = (const char*)glGetString(GL_VERSION);
 
+   sw2_trace("gl2: got strings");
    RARCH_LOG("[GL] Vendor: %s, Renderer: %s.\n", vendor, renderer);
    RARCH_LOG("[GL] Version: %s.\n", version);
 
@@ -8825,6 +8841,7 @@ static void *gl2_init(const video_info_t *video)
          video_driver_force_fallback("gl1");
 #endif
 
+   sw2_trace("gl2: pre-hwr");
    hwr = video_driver_get_hw_context();
 
    if (hwr->context_type == RETRO_HW_CONTEXT_OPENGL_CORE)
@@ -8850,12 +8867,14 @@ static void *gl2_init(const video_info_t *video)
       }
    }
 
+   sw2_trace("gl2: pre-renderchain_init_first");
    if (!renderchain_gl2_init_first(&gl->renderchain_data))
    {
       RARCH_ERR("[GL] Renderchain could not be initialized.\n");
       goto error;
    }
 
+   sw2_trace("gl2: pre-restore_state");
    gl2_renderchain_restore_default_state(gl);
 
 #ifndef HAVE_OPENGLES
@@ -8868,6 +8887,7 @@ static void *gl2_init(const video_info_t *video)
    }
 #endif
 
+   sw2_trace("gl2: pre-blend");
    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
    glBlendEquation(GL_FUNC_ADD);
 
@@ -8881,6 +8901,7 @@ static void *gl2_init(const video_info_t *video)
    else
       gl->flags           &= ~GL2_FLAG_HAVE_FBO;
 
+   sw2_trace("gl2: pre-resolve_ext");
    if (!gl2_resolve_extensions(gl, ctx_driver->ident, video))
       goto error;
 
@@ -8899,6 +8920,7 @@ static void *gl2_init(const video_info_t *video)
 #endif
 
 #ifdef GL_DEBUG
+   sw2_trace("gl2: pre-begin_debug");
    gl2_begin_debug(gl);
 #endif
 
@@ -8963,6 +8985,7 @@ static void *gl2_init(const video_info_t *video)
 
    gl->white_color_ptr = white_color;
 
+   sw2_trace("gl2: pre-shader_init");
    gl->shader          = (shader_backend_t*)gl2_shader_ctx_drivers[0];
 
    if (!gl->shader)
@@ -8973,6 +8996,7 @@ static void *gl2_init(const video_info_t *video)
 
    RARCH_LOG("[GL] Default shader backend found: %s.\n", gl->shader->ident);
 
+   sw2_trace("gl2: shader_init");
    if (!gl2_shader_init(gl, ctx_driver, hwr))
    {
       RARCH_ERR("[GL] Shader initialization failed.\n");
@@ -8991,6 +9015,7 @@ static void *gl2_init(const video_info_t *video)
    RARCH_LOG("[GL] Loaded %u program(s).\n",
          shader_info_num);
 
+   sw2_trace("gl2: post-shader");
    gl->tex_dims = VIDEO_SCALE_PACK(RARCH_SCALE_BASE * video->input_scale,
          RARCH_SCALE_BASE * video->input_scale);
    if (video->force_aspect)
@@ -9030,6 +9055,7 @@ static void *gl2_init(const video_info_t *video)
 
    gl->wrap_mode      = gl2_wrap_type_to_enum(wrap_type);
 
+   sw2_trace("gl2: pre-texfmts");
    gl2_set_texture_fmts(gl, video->rgb32);
 
    memcpy(gl->tex_info.coord, tex_coords, sizeof(gl->tex_info.coord));
@@ -9058,6 +9084,7 @@ static void *gl2_init(const video_info_t *video)
    if (!gl->conv_buffer)
       goto error;
 
+   sw2_trace("gl2: pre-init_textures");
    gl2_init_textures(gl);
    gl2_init_textures_data(gl);
 
@@ -9069,7 +9096,9 @@ static void *gl2_init(const video_info_t *video)
             sizeof(uint32_t), false);
    }
 
+   sw2_trace("gl2: pre-fbo_latch");
    gl2_fbo_settings_latch(gl);
+   sw2_trace("gl2: pre-renderchain_init");
    gl2_renderchain_init(gl,
          (gl2_renderchain_data_t*)gl->renderchain_data);
 
@@ -9086,6 +9115,7 @@ static void *gl2_init(const video_info_t *video)
       }
    }
 
+   sw2_trace("gl2: post-renderchain");
    if (gl->ctx_driver->input_driver)
    {
       const char *joypad_name = settings->arrays.input_joypad_driver;
@@ -9111,12 +9141,14 @@ static void *gl2_init(const video_info_t *video)
    else
       gl->flags &= ~GL2_FLAG_PBO_READBACK_ENABLE;
 
+   sw2_trace("gl2: pre-check_error");
    if (!gl_check_error(&error_string))
    {
       RARCH_ERR("[GL] %s\n", error_string);
       free(error_string);
       goto error;
    }
+   sw2_trace("gl2: init-done");
 
 #ifdef HAVE_GL2_XR
    gl2_desktop_xr_start(gl);

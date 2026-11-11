@@ -108,6 +108,9 @@ extern bool nxlink_connected;
 
 void libnx_apply_overclock(void)
 {
+#ifdef __SWITCH2__
+   return;
+#else
    const size_t profiles_count = sizeof(SWITCH_CPU_PROFILES)
       / sizeof(SWITCH_CPU_PROFILES[1]) - 1;
    settings_t *settings        = config_get_ptr();
@@ -128,6 +131,7 @@ void libnx_apply_overclock(void)
          clkrstCloseSession(&session);
       }
    }
+#endif
 }
 
 static void on_applet_hook(AppletHookType hook, void *param)
@@ -208,15 +212,24 @@ static void get_first_valid_core(char *path_return, size_t len)
 }
 #endif
 
+void sw2_trace(const char *m)
+{
+   FILE *f = fopen("/retroarch-trace.txt", "ab");
+   if (!f) return;
+   fputs(m, f); fputc(10, f); fclose(f);
+}
+
 static void frontend_switch_get_env(
       int *argc, char *argv[], void *args, void *params_data)
 {
    unsigned i;
+   sw2_trace("get_env");
 #ifndef IS_SALAMANDER
 #if defined(HAVE_LOGGER)
    logger_init();
 #elif defined(HAVE_FILE_LOGGER)
-   retro_main_log_file_init(SD_PREFIX "/retroarch-log.txt");
+   retro_main_log_file_init(SD_PREFIX "/retroarch-log.txt", false);
+   verbosity_enable();
 #endif
 #endif
 
@@ -310,9 +323,11 @@ static void frontend_switch_get_env(
 static void frontend_switch_deinit(void *data)
 {
    (void)data;
+   sw2_trace("deinit");
 
+   sw2_trace("deinit-nifm");
    nifmExit();
-
+   sw2_trace("deinit-clk");
    if (hosversionBefore(8, 0, 0))
    {
       pcvSetClockRate(PcvModule_CpuBus, 1020000000);
@@ -320,13 +335,16 @@ static void frontend_switch_deinit(void *data)
    }
    else
    {
+#ifndef __SWITCH2__
       ClkrstSession session = {0};
       clkrstOpenSession(&session, PcvModuleId_CpuBus, 3);
       clkrstSetClockRate(&session, 1020000000);
       clkrstCloseSession(&session);
+#endif
       clkrstExit();
    }
 
+   sw2_trace("deinit-pre-socket");
 #if defined(SWITCH) && defined(NXLINK)
    socketExit();
 #endif
@@ -334,6 +352,7 @@ static void frontend_switch_deinit(void *data)
    if (psmInitialized)
        psmExit();
 
+   sw2_trace("deinit-unlock");
    appletUnlockExit();
 }
 
@@ -571,6 +590,7 @@ error:
 
 static void frontend_switch_shutdown(bool unused)
 {
+   sw2_trace("shutdown");
    (void)unused;
 }
 
@@ -581,6 +601,7 @@ static void frontend_switch_init(void *data)
 {
    Result rc;
    bool recording_supported      = false;
+   sw2_trace("init");
 
    nifmInitialize(NifmServiceType_User);
 
@@ -605,6 +626,7 @@ static void frontend_switch_init(void *data)
 #endif /* IS_SALAMANDER */
 #endif /* NXLINK */
 
+   sw2_trace("init-pre-psm");
    rc = psmInitialize();
    if (R_SUCCEEDED(rc))
        psmInitialized = true;

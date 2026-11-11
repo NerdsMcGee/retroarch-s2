@@ -18674,7 +18674,7 @@ static bool menu_displaylist_ctl_internal(
                      count++;
 #endif
 
-#if defined(HAVE_LIBNX)
+#if defined(HAVE_LIBNX) && !defined(__SWITCH2__)
                if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
                      info->list,
                      MENU_ENUM_LABEL_SWITCH_CPU_PROFILE,
@@ -18682,11 +18682,13 @@ static bool menu_displaylist_ctl_internal(
                   count++;
 #endif
 
+#ifndef __SWITCH2__
                if (MENU_DISPLAYLIST_PARSE_SETTINGS_ENUM(
                      info->list,
                      MENU_ENUM_LABEL_SWITCH_GPU_PROFILE,
                      PARSE_ACTION, false) == 0)
                   count++;
+#endif
 
 #if !TARGET_OS_IPHONE
                if (settings->bools.menu_show_restart_retroarch)

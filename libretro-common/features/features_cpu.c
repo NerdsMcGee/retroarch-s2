@@ -264,7 +264,13 @@ retro_time_t cpu_features_get_time_usec(void)
 #elif defined(WIIU)
    return ticks_to_us(OSGetSystemTime());
 #elif defined(SWITCH) || defined(HAVE_LIBNX)
+#ifdef __SWITCH2__
+   /* The Switch 2's system tick is 31.25 MHz, not the Switch's 19.2 MHz:
+    * taken as 19.2 MHz, time ran 1.63 times too fast */
+   return armTicksToNs(armGetSystemTick()) / 1000;
+#else
    return (svcGetSystemTick() * 10) / 192;
+#endif
 #elif defined(_3DS)
    return osGetTime() * 1000;
 #elif defined(_POSIX_MONOTONIC_CLOCK) || defined(__QNX__) || defined(ANDROID) || defined(__MACH__)

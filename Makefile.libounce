@@ -77,7 +77,7 @@ HAVE_SWITCH = 1
 HAVE_LIBNX = 1
 HAVE_OPENGL = 1
 HAVE_OPENGLES = 1
-HAVE_OPENGLES2 = 1
+HAVE_OPENGLES3 = 1
 HAVE_LANGEXTRA = 1
 HAVE_GFX_WIDGETS = 1
 
@@ -138,7 +138,7 @@ APP_ICON := pkg/libnx/retroarch.jpg
 #---------------------------------------------------------------------------------
 # options for code generation
 #---------------------------------------------------------------------------------
-ARCH	:=	-march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIE -mcpu=cortex-a57+crc+fp+simd
+ARCH	:=	$(SWITCH2_CPU) -mtp=soft -fPIE
 
 CFLAGS := -g -Wall -O3 -fcommon -ffunction-sections \
           $(ARCH) $(DEFINES) $(INCLUDE_DIRS) -I$(LIBNX)/include -I$(PORTLIBS)/include/ -include $(LIBNX)/include/switch.h
@@ -161,7 +161,7 @@ LDFLAGS	=	-specs=$(DEVKITPRO)/libounce/switch.specs $(ARCH) -Wl,--allow-multiple
 # add things from Makefile.common
 CFLAGS += $(DEF_FLAGS)
 
-LIBS := -lswresample -lavformat -lavcodec -lavutil -lswscale -lstdc++ -lbz2 -lpng -lz -lnx -lvpx -lopus -llzma -lnx -lm
+LIBS := -louncehen -lswresample -lavformat -lavcodec -lavutil -lswscale -lstdc++ -lbz2 -lpng -lz -lnx -lvpx -lopus -llzma -lnx -lm
 
 ifeq ($(HAVE_OPENGL), 1)
   LIBS := -lGLESv2 -lEGL -lglapi -ldrm_nouveau $(LIBS)

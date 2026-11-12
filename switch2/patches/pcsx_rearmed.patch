@@ -1,0 +1,223 @@
+diff --git a/Makefile.libretro b/Makefile.libretro
+index cd53109..18ef686 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -81,6 +81,14 @@ else ifeq ($(platform), ctr)
+   AR = $(DEVKITARM)/bin/arm-none-eabi-ar$(EXE_EXT)
+   LD = $(DEVKITARM)/bin/arm-none-eabi-ld$(EXE_EXT)
+   OBJCOPY = $(DEVKITARM)/bin/arm-none-eabi-objcopy$(EXE_EXT)
++else ifeq ($(platform), libounce)
++  export DEPSDIR := $(CURDIR)/
++  ifeq ($(strip $(DEVKITPRO)),)
++  $(error "DEVKITPRO env var is not set")
++  endif
++  include $(DEVKITPRO)/libounce/switch2_rules
++  SHELL := PATH=$(PATH) $(SHELL)
++  LD = $(PREFIX)ld
+ else ifeq ($(platform), libnx)
+   export DEPSDIR := $(CURDIR)/
+   ifeq ($(strip $(DEVKITPRO)),)
+@@ -270,6 +278,25 @@ endif
+ 	FSECTIONS_LDFLAGS = -Wl,-dead_strip
+ 	GNU_LINKER = 0
+ 
++# Nintendo Switch 2 (libounce)
++else ifeq ($(platform), libounce)
++   TARGET := $(TARGET_NAME)_libretro_libnx.a
++   ARCH := arm64
++   HAVE_VFS_FD = 0
++   CFLAGS += -O3 -fomit-frame-pointer -ffast-math -I$(LIBNX)/include/ -fPIE
++   CFLAGS += -specs=$(LIBNX)/switch.specs -DNO_DYLIB -D__arm64__ -D__ARM_NEON__
++   CFLAGS += -D__SWITCH__ -D__SWITCH2__ -DSWITCH -DHAVE_LIBNX
++   CFLAGS += -DARM -D__aarch64__=1 $(SWITCH2_CPU) -mtp=soft -DHAVE_INTTYPES -DLSB_FIRST
++   CFLAGS += -ftree-vectorize -ffunction-sections -fdata-sections -ftls-model=local-exec
++   CFLAGS += -Ifrontend/switch
++   NO_POSIX_MEMALIGN := 1
++   NO_MMAP := 1 # for psxmem
++   LIBPTHREAD :=
++   PARTIAL_LINKING = 1
++   BUILTIN_GPU = neon
++   DYNAREC = ari64
++   HAVE_PHYSICAL_CDROM = 0
++
+ # Nintendo Switch (libnx)
+ else ifeq ($(platform), libnx)
+    TARGET := $(TARGET_NAME)_libretro_$(platform).a
+diff --git a/frontend/libretro.c b/frontend/libretro.c
+index 734fc30..cd3c274 100644
+--- a/frontend/libretro.c
++++ b/frontend/libretro.c
+@@ -3502,8 +3502,37 @@ static void print_internal_fps(void)
+ static bool get_bios_config_hle(void);
+ static void prepare_bios(bool use_hle);
+ 
++#ifdef __SWITCH2__
++extern void sw2_trace(const char *msg);
++static void sw2_psx_progress(void)
++{
++   static unsigned frames, last_pc, same;
++   char m[192];
++   if (++frames % 120)
++      return;
++   same = (psxRegs.pc == last_pc) ? same + 1 : 0;
++   last_pc = psxRegs.pc;
++   {
++      extern unsigned sw2_psx_pub_n, sw2_psx_pub_bad;
++      snprintf(m, sizeof(m), "psx: publishes %u mismatches %u", sw2_psx_pub_n, sw2_psx_pub_bad);
++      sw2_trace(m);
++   }
++   snprintf(m, sizeof(m), "psx: frame %u pc=%08x cycle=%u drc=%d thread=%d hle=%d same=%u",
++            frames, psxRegs.pc, psxRegs.cycle, (int)!Config.Cpu,
++#if defined(NDRC_THREAD) && !defined(DRC_DISABLE)
++            (int)!!ndrc_g.thread.handle,
++#else
++            0,
++#endif
++            (int)Config.HLE, same);
++   sw2_trace(m);
++}
++#endif
+ void retro_run(void)
+ {
++#ifdef __SWITCH2__
++   sw2_psx_progress();
++#endif
+    //SysReset must be run while core is running,Not in menu (Locks up Retroarch)
+    if (reset_pending)
+    {
+diff --git a/libpcsxcore/new_dynarec/new_dynarec.c b/libpcsxcore/new_dynarec/new_dynarec.c
+index fb99df6..3fed375 100644
+--- a/libpcsxcore/new_dynarec/new_dynarec.c
++++ b/libpcsxcore/new_dynarec/new_dynarec.c
+@@ -35,6 +35,62 @@
+ #include <switch.h>
+ static Jit g_jit;
+ #endif
++#ifdef __SWITCH2__
++/* Switch 2 (libounce): code is written to the staging (rw) view and made
++ * runnable by publishing the written range to the rx view, which copies it
++ * and invalidates the instruction cache (broadcast to all cores). The libnx
++ * path's jitTransitionToExecutable() would publish the whole staging buffer
++ * on every write. */
++#include <ouncehen.h>
++extern void sw2_trace(const char *msg);
++/* Publishes come from the compile thread and the emulator's thread: one at
++ * a time. Each is checked: the rx bytes must equal the staged bytes. */
++static Mutex sw2_pub_lock;
++unsigned sw2_psx_pub_n, sw2_psx_pub_bad, sw2_psx_pub_thr;
++static void sw2_jit_publish(void *start, void *end)
++{
++  uintptr_t rw = (uintptr_t)g_jit.rw_addr;
++  uintptr_t s = (uintptr_t)start, e = (uintptr_t)end;
++  /* The dynarec's ranges assume cache-maintenance granularity: callers
++   * pass inclusive-ish ends (do_clear_cache and mark_clear_cache use
++   * page + 4095), which cache maintenance covers by whole lines but a
++   * byte-exact publish does not - the page's last byte stayed stale, so a
++   * branch patched into a page's last slot ran with a stale top byte.
++   * Publish whole 64-byte lines, as the cache maintenance would. */
++  s &= ~(uintptr_t)63;
++  e = (e + 63) & ~(uintptr_t)63;
++  if (s < rw) s = rw;
++  if (e > rw + g_jit.size) e = rw + g_jit.size;
++  if (e <= s)
++    return;
++  OuncehenJitRange r = { (u64)(s - rw), (u64)(e - s) };
++  mutexLock(&sw2_pub_lock);
++  Result rc = ouncehenJitPublishRanges(&g_jit, &r, 1);
++  sw2_psx_pub_n++;
++  if (R_SUCCEEDED(rc)) {
++    const unsigned char *a = (const unsigned char *)g_jit.rx_addr + r.offset;
++    const unsigned char *b = (const unsigned char *)g_jit.rw_addr + r.offset;
++    if (memcmp(a, b, r.size) != 0) {
++      size_t k = 0;
++      while (k < r.size && a[k] == b[k]) k++;
++      if (sw2_psx_pub_bad++ < 20) {
++        char m[160];
++        snprintf(m, sizeof(m), "psx: publish MISMATCH off=%llx size=%llx first diff +%zx rx=%02x rw=%02x",
++                 (unsigned long long)r.offset, (unsigned long long)r.size, k, a[k], b[k]);
++        sw2_trace(m);
++      }
++    }
++  }
++  mutexUnlock(&sw2_pub_lock);
++  if (R_FAILED(rc)) {
++    char m[128];
++    snprintf(m, sizeof(m), "psx: publish FAILED rc=%x off=%llx size=%llx", (unsigned)rc,
++             (unsigned long long)r.offset, (unsigned long long)r.size);
++    sw2_trace(m);
++    abort();
++  }
++}
++#endif
+ 
+ #include "new_dynarec_config.h"
+ #include "../psxhle.h"
+@@ -675,6 +731,8 @@ static void mprotect_w_x(void *start, void *end, int is_x)
+     sceKernelCloseVMDomain();
+   else
+     sceKernelOpenVMDomain();
++  #elif defined(__SWITCH2__)
++  (void)start; (void)end; (void)is_x;
+   #elif defined(HAVE_LIBNX)
+   Result rc;
+   // check to avoid the full flush in jitTransitionToExecutable()
+@@ -714,6 +772,8 @@ void new_dyna_clear_cache(void *start, void *end)
+     ctr_clear_cache_range(start, end);
+   else
+     ctr_clear_cache();
++  #elif defined(__SWITCH2__)
++  sw2_jit_publish(start, end);
+   #elif defined(HAVE_LIBNX)
+   if (g_jit.type == JitType_CodeMemory) {
+     armDCacheClean(start, len);
+@@ -745,8 +805,13 @@ static void end_tcache_write(void *start, void *end, int clear_cache)
+   if ((size_t)ndrc_g.thread.dirty_end < (size_t)end)
+     ndrc_g.thread.dirty_end = end;
+ #endif
++#ifdef __SWITCH2__
++  (void)clear_cache;
++  new_dyna_clear_cache(start, end);
++#else
+   if (clear_cache)
+     new_dyna_clear_cache(start, end);
++#endif
+ 
+   mprotect_w_x(start, end, 1);
+ }
+@@ -1649,7 +1714,7 @@ static void *get_trampoline(const void *f)
+     start_tcache_write(&tramp->f[i], &tramp->f[i + 1]);
+     tramp->f[i] = f;
+     end_tcache_write(&tramp->f[i], &tramp->f[i + 1], 1);
+-#ifdef HAVE_LIBNX
++#if defined(HAVE_LIBNX) && !defined(__SWITCH2__)
+     // invalidate the RX mirror (unsure if necessary, but just in case...)
+     armDCacheFlush(&ndrc->tramp.f[i], sizeof(ndrc->tramp.f[i]));
+ #endif
+@@ -6707,10 +6772,27 @@ void new_dynarec_init(void)
+   if (R_FAILED(rc))
+     SysPrintf("jitCreate failed: %08x\n", rc);
+   SysPrintf("jitCreate: RX: %p RW: %p type: %d\n", g_jit.rx_addr, g_jit.rw_addr, g_jit.type);
++#ifdef __SWITCH2__
++  {
++    char m[160];
++    snprintf(m, sizeof(m), "psx: jitCreate rc=%x size=%x type=%d rw=%p rx=%p exec=%d",
++             (unsigned)rc, (unsigned)sizeof(*ndrc), (int)g_jit.type, g_jit.rw_addr, g_jit.rx_addr,
++             (int)g_jit.is_executable);
++    sw2_trace(m);
++    if (R_FAILED(rc))
++      abort();
++    if (g_jit.is_executable)
++      jitTransitionToWritable(&g_jit);
++  }
++#else
+   jitTransitionToWritable(&g_jit);
++#endif
+   ndrc = g_jit.rx_addr;
+   ndrc_write_ofs = (char *)g_jit.rw_addr - (char *)ndrc;
+   memset(NDRC_WRITE_OFFSET(&ndrc->tramp), 0, sizeof(ndrc->tramp));
++#ifdef __SWITCH2__
++  new_dyna_clear_cache(NDRC_WRITE_OFFSET(&ndrc->tramp), NDRC_WRITE_OFFSET(&ndrc->tramp + 1));
++#endif
+   #else
+   uintptr_t desired_addr = 0;
+   int prot = PROT_READ | PROT_WRITE | PROT_EXEC;

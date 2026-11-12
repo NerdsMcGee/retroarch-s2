@@ -19,6 +19,9 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#if defined(__SWITCH2__) && defined(HAVE_THREADS)
+void sw2_gl_ctx_defer_core_take(void);
+#endif
 #include <memory/mem_stats.h>
 #include "input/input_driver.h"
 #ifdef HAVE_OPENXR
@@ -5780,7 +5783,16 @@ void runloop_event_deinit_core(void)
    if (runloop_st->current_core.flags & RETRO_CORE_FLAG_INITED)
    {
       RARCH_LOG("[Core] Unloading core...\n");
+#ifdef HAVE_THREADS
+      /* The core may still use its GL context in retro_deinit(), as it
+       * may in retro_unload_game(): mupen64plus finishes emulating there,
+       * and GLideN64 saves its shader cache through GL on the way out. */
+      video_thread_core_context_take();
+#endif
       runloop_st->current_core.retro_deinit();
+#ifdef HAVE_THREADS
+      video_thread_core_context_release();
+#endif
 #if TARGET_OS_IPHONE
       exec_mem_ledger_free_all();
 #endif
@@ -8694,8 +8706,17 @@ static enum runloop_state_enum runloop_check_state(
          /* a MENU request's action, run as the menu's own input is */
          action = (enum menu_action)command_menu_action(action);
 #endif
+#ifdef __SWITCH2__
+         extern long long sw2_menu_iter_us;
+         long long sw2_mi0 = (long long)cpu_features_get_time_usec();
+         bool sw2_mi_ok = menu_driver_iterate(menu_st, p_disp, anim_get_ptr(),
+                  settings, action, current_time);
+         sw2_menu_iter_us += (long long)cpu_features_get_time_usec() - sw2_mi0;
+         if (!sw2_mi_ok)
+#else
          if (!menu_driver_iterate(menu_st, p_disp, anim_get_ptr(),
                   settings, action, current_time))
+#endif
          {
             if (err_on_init)
             {
@@ -11200,7 +11221,12 @@ bool core_run(void)
 #ifdef HAVE_THREADS
       /* One GL context handed between the threads: the core's for the
        * frame, the video thread's between frames. */
+#ifdef __SWITCH2__
+      /* taken by the core's first use of it in the frame, not here */
+      sw2_gl_ctx_defer_core_take();
+#else
       video_thread_core_context_take();
+#endif
 #endif
       current_core->retro_run();
 #ifdef HAVE_THREADS

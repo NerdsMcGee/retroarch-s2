@@ -14,6 +14,7 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <features/features_cpu.h>
 #include <stdlib.h>
 
 #include <string/stdstring.h>
@@ -73,7 +74,9 @@ static void *switch_ctx_init(void *video_driver)
         EGL_GREEN_SIZE, 8,
         EGL_RED_SIZE, 8,
         EGL_ALPHA_SIZE, 8,
-#ifdef HAVE_OPENGLES
+#if defined(HAVE_OPENGLES3)
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+#elif defined(HAVE_OPENGLES)
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
 #endif
         EGL_NONE};
@@ -147,8 +150,18 @@ static bool switch_ctx_set_video_mode(void *data,
     /* Create an EGL rendering context */
     static const EGLint contextAttributeList[] =
         {
+#ifdef HAVE_OPENGLES3
+            EGL_CONTEXT_MAJOR_VERSION, 3,
+#else
+            EGL_CONTEXT_CLIENT_VERSION, 2,
+#endif
+            EGL_NONE};
+#ifdef HAVE_OPENGLES3
+    static const EGLint contextAttributeListES2[] =
+        {
             EGL_CONTEXT_CLIENT_VERSION, 2,
             EGL_NONE};
+#endif
 
     switch_ctx_data_t *ctx_nx = (switch_ctx_data_t *)data;
     unsigned win_dims         = 0;
@@ -163,8 +176,22 @@ static bool switch_ctx_set_video_mode(void *data,
     if (!egl_create_context(&ctx_nx->egl, contextAttributeList))
     {
         egl_report_error();
+#ifdef HAVE_OPENGLES3
+        /* no ES 3 context: fall back to ES 2 */
+        sw2_trace("ctx: GLES3 context failed, trying GLES2");
+        if (!egl_create_context(&ctx_nx->egl, contextAttributeListES2))
+        {
+            egl_report_error();
+            goto error;
+        }
+#else
         goto error;
+#endif
     }
+#ifdef HAVE_OPENGLES3
+    else
+        sw2_trace("ctx: GLES3 context created");
+#endif
 #endif
 
     sw2_trace("pre-create_surface");
@@ -221,13 +248,27 @@ static void switch_ctx_set_swap_interval(void *data, int swap_interval)
 #endif
 }
 
+#ifdef __SWITCH2__
+/* Read by the Dreamcast core's timing report: time in eglSwapBuffers on the video thread */
+unsigned long long sw2_swap_us;
+unsigned sw2_swap_n;
+#endif
 static void switch_ctx_swap_buffers(void *data)
 {
 #ifdef HAVE_EGL
     static int n;
     if (n < 3) { n++; sw2_trace("swap_buffers"); }
     switch_ctx_data_t *ctx_nx = (switch_ctx_data_t*)data;
+#ifdef __SWITCH2__
+    {
+       retro_time_t t0 = cpu_features_get_time_usec();
+       egl_swap_buffers(&ctx_nx->egl);
+       sw2_swap_us += (unsigned long long)(cpu_features_get_time_usec() - t0);
+       sw2_swap_n++;
+    }
+#else
     egl_swap_buffers(&ctx_nx->egl);
+#endif
 #endif
 }
 

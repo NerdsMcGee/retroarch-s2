@@ -1,0 +1,190 @@
+diff --git a/Makefile b/Makefile
+index 4131c29..85b8861 100644
+--- a/Makefile
++++ b/Makefile
+@@ -495,6 +495,30 @@ else ifeq ($(platform), libnx)
+    SOURCES_C += $(CORE_DIR)/core/deps/switch/stubs.c
+ #######################################
+ 
++# Odroid-N2
++# libounce (Switch 2)
++else ifeq ($(platform), libounce)
++   include $(DEVKITPRO)/libounce/switch2_rules
++   CC_AS = aarch64-none-elf-as
++   TARGET := $(TARGET_NAME)_libretro_libnx.a
++   DEFINES := -DSWITCH=1 -D__SWITCH__ -D__SWITCH2__=1 -fcommon -DHAVE_LIBNX=1 -DTARGET_LIBNX -DFEAT_NO_RWX_PAGES
++   CFLAGS := $(DEFINES) -fPIE -I$(LIBNX)/include/ -I$(PORTLIBS)/include/ -isystem$(CORE_DIR)/core/deps/switch/ -ffunction-sections -fdata-sections -ftls-model=local-exec
++   CPUFLAGS += -march=armv8-a -mtune=cortex-a57 -mtp=soft -mcpu=cortex-a57+crc+fp+simd -ffast-math -frename-registers -funroll-loops -ftree-vectorize
++   CFLAGS += $(CPUFLAGS) -DTARGET_LIBNX
++   FORCE_GLES = 1
++   CFLAGS += -I$(DEVKITPRO)/portlibs/switch2/include
++   WITH_DYNAREC =
++   NO_REC = 1
++   HOST_CPU_FLAGS = -DHOST_CPU=$(HOST_CPU_ARM64)
++   HAVE_GENERIC_JIT = 0
++   STATIC_LINKING = 1
++   ENABLE_MODEM = 0
++   HAVE_LTCG = 0
++   NO_NVMEM = 1
++   # stubs
++   SOURCES_C += $(CORE_DIR)/core/deps/switch/stubs.c
++#######################################
++
+ # Odroid-N2
+ else ifeq ($(platform), odroid-n2)
+ 	EXT ?= so
+@@ -1248,6 +1272,7 @@ endif
+ # Content files are memory-mapped where the platform has mmap().
+ ifeq ($(WINDOWS_BUILD), 1)
+ else ifeq ($(platform), libnx)
++else ifeq ($(platform), libounce)
+ else ifeq ($(platform), emscripten)
+ else
+ 	HAVE_MMAP ?= 1
+diff --git a/core/hw/mem/_vmem.cpp b/core/hw/mem/_vmem.cpp
+index fb0ac69..93dbec8 100644
+--- a/core/hw/mem/_vmem.cpp
++++ b/core/hw/mem/_vmem.cpp
+@@ -449,8 +449,10 @@ bool BM_LockedWrite(u8* address) {
+ 
+ u8 *_vmem_elan_ram;
+ 
++extern "C" void sw2_trace(const char *m);
+ bool _vmem_reserve(void)
+ {
++	sw2_trace("fc: _vmem_reserve");
+ 	_vmem_elan_ram = NULL;
+ 	// (said again below if this load gets the 4 GB layout: the last one's does not count)
+ 	vmem_4gb_space = false;
+@@ -492,6 +494,7 @@ bool _vmem_reserve(void)
+ 		aica_ram.size = ARAM_SIZE;
+ 		aica_ram.data = (u8*)malloc_pages(ARAM_SIZE + PAGE_SIZE);
+ 
++		sw2_trace("fc: vmem buffers allocated");
+ 		if (mem_b.data)
+ 			memset(mem_b.data + RAM_SIZE, 0, PAGE_SIZE);
+ 		if (vram.data)
+diff --git a/core/libretro/common.cpp b/core/libretro/common.cpp
+index 3d981e9..7556ca3 100644
+--- a/core/libretro/common.cpp
++++ b/core/libretro/common.cpp
+@@ -671,7 +671,7 @@ void common_libretro_cleanup(void)
+ #endif
+ }
+ 
+-#if !defined(TARGET_NO_EXCEPTIONS) && defined(HAVE_LIBNX)
++#if !defined(TARGET_NO_EXCEPTIONS) && defined(HAVE_LIBNX) && !defined(TARGET_NO_REC)
+ extern "C"
+ {
+ 
+diff --git a/core/libretro/libretro.cpp b/core/libretro/libretro.cpp
+index 4687729..1b7b797 100644
+--- a/core/libretro/libretro.cpp
++++ b/core/libretro/libretro.cpp
+@@ -2959,8 +2959,10 @@ static void naomi_bios_detect_multiregion(void)
+       NOTICE_LOG(NAOMI, "Multi-region BIOS: Korea set on the DIP switches");
+ }
+ 
++extern "C" void sw2_trace(const char *m);
+ bool retro_load_game(const struct retro_game_info *game)
+ {
++   sw2_trace("fc: retro_load_game");
+    const char *dir = NULL;
+    const char *vmu_dir = NULL;
+ #ifdef _WIN32
+@@ -3260,7 +3262,9 @@ bool retro_load_game(const struct retro_game_info *game)
+       snprintf(nvmem_file2, sizeof(nvmem_file2), "%s%s.nvmem2", save_dir, g_base_name);
+    }
+ 
++   sw2_trace("fc: pre-dc_prepare_system");
+    dc_prepare_system();
++   sw2_trace("fc: pre-dc_init");
+    // (again, for frames of the machine's size, now that it is known)
+    ta_set_walk_check(ta_header_check);
+ 
+@@ -3271,6 +3275,7 @@ bool retro_load_game(const struct retro_game_info *game)
+    	ERROR_LOG(BOOT, "Initialization failed");
+    	return false;
+    }
++   sw2_trace("fc: dc_init ok");
+    naomi_bios_detect_multiregion();
+    midiffb_init();
+    int rotation = rotate_screen ? 3 : 0;
+diff --git a/core/libretro/vmem_utils.cpp b/core/libretro/vmem_utils.cpp
+index 4a077e4..a70c86d 100644
+--- a/core/libretro/vmem_utils.cpp
++++ b/core/libretro/vmem_utils.cpp
+@@ -22,6 +22,16 @@
+ 
+ #if defined(HAVE_LIBNX)
+ #include <switch.h>
++#ifdef __SWITCH2__
++/* libounce has no virtmemReserve */
++static inline void *virtmemReserve(size_t size)
++{
++	virtmemLock();
++	void *p = virtmemFindAslr(size, 0);
++	virtmemUnlock();
++	return p;
++}
++#endif
+ FILE *	fmemopen (void *__restrict, size_t, const char *__restrict);
+ #endif
+ 
+diff --git a/core/nullDC.cpp b/core/nullDC.cpp
+index 58c4f1f..729ce07 100644
+--- a/core/nullDC.cpp
++++ b/core/nullDC.cpp
+@@ -560,8 +560,10 @@ static void dc_init_unwind(int stage)
+    }
+ }
+ 
++extern "C" void sw2_trace(const char *m);
+ int dc_init()
+ {
++   sw2_trace("fc: dc_init");
+    extern void common_libretro_setup(void);
+    extern char game_dir_no_slash[1024];
+    char new_system_dir[1024];
+@@ -577,8 +579,10 @@ int dc_init()
+       dc_init_unwind(DC_INIT_SETUP);
+       return -1;
+    }
++   sw2_trace("fc: pre-reios_init");
+    reios_init();
+ 
++   sw2_trace("fc: pre-LoadSettings");
+    LoadSettings();
+ 
+ #ifdef _WIN32
+@@ -607,9 +611,12 @@ int dc_init()
+    {
+       LoadRomFiles(new_system_dir);
+    }
++   sw2_trace("fc: pre-LoadSpecialSettingsCPU");
+    LoadSpecialSettingsCPU();
+ 
++   sw2_trace("fc: pre-sh4_cpu.Init");
+    sh4_cpu.Init();
++   sw2_trace("fc: pre-mem_Init");
+    mem_Init();
+ 
+ #ifdef _WIN64
+@@ -619,6 +626,7 @@ int dc_init()
+    }
+ #endif
+ 
++   sw2_trace("fc: pre-plugins_Init");
+    if (plugins_Init())
+    {
+       dc_init_unwind(DC_INIT_CPU);
+@@ -634,7 +642,9 @@ int dc_init()
+       WARN_LOG(COMMON, "No NAOMI BIOS, using reios");
+    }
+ 
++   sw2_trace("fc: pre-mem_map_default");
+    mem_map_default();
++   sw2_trace("fc: post-mem_map_default");
+ 
+    dc_reset(true);
+ 

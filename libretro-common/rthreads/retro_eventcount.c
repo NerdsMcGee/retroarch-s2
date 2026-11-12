@@ -198,7 +198,16 @@ static unsigned           ec_linux_spin;
  * version at startup, and this is asked once per object at init. */
 static bool ec_switch_has_arbiter(void)
 {
+#ifdef __SWITCH2__
+   /* Switch 2: a thread parked on the arbiter was seen to sleep through
+    * svcSignalToAddress - the video thread through the frame handoff's
+    * notify and its GL context's, waking only some 30 ms later - so the
+    * condition variable it is: a lost wake costs a frame's present, and
+    * the core's next GL work waits that out */
+   return false;
+#else
    return hosversionAtLeast(4, 0, 0);
+#endif
 }
 
 /* Waits while the epoch still reads @key, for @timeout_ns (negative:

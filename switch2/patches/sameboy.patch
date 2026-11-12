@@ -1,0 +1,21 @@
+diff --git a/libretro/Makefile b/libretro/Makefile
+index 1169b98..fca8e98 100644
+--- a/libretro/Makefile
++++ b/libretro/Makefile
+@@ -136,6 +136,16 @@ else ifeq ($(platform), libnx)
+    CXXFLAGS := $(ASFLAGS) $(CFLAGS)
+    STATIC_LINKING = 1
+ # Nintendo WiiU
++# libounce (Switch 2)
++else ifeq ($(platform), libounce)
++   include $(DEVKITPRO)/libounce/switch2_rules
++   TARGET := $(TARGET_NAME)_libretro_libnx.a
++   DEFINES += -DSWITCH=1 -D__SWITCH__ -D__SWITCH2__ -DARM
++   CFLAGS += $(DEFINES) -fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec
++   CFLAGS += -mtp=soft $(SWITCH2_CPU) -ffast-math
++   CXXFLAGS := $(ASFLAGS) $(CFLAGS)
++   STATIC_LINKING = 1
++# Nintendo WiiU
+ else ifeq ($(platform), wiiu)
+    TARGET := $(TARGET_NAME)_libretro_$(platform).a
+    CC = $(DEVKITPPC)/bin/powerpc-eabi-gcc$(EXE_EXT)

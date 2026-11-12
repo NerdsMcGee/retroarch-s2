@@ -1,0 +1,30 @@
+diff --git a/Makefile b/Makefile
+index dc2a31c..a0ea9be 100644
+--- a/Makefile
++++ b/Makefile
+@@ -207,6 +207,25 @@ include $(DEVKITPRO)/libnx/switch_rules
+ # Platform affix = classic_<ISA>_<µARCH>
+ # Help at https://modmyclassic.com/comp
+ 
++# (armv7 a7, hard point, neon based) ### 
++# NESC, SNESC, C64 mini 
++# libounce (Switch 2)
++else ifeq ($(platform), libounce)
++include $(DEVKITPRO)/libounce/switch2_rules
++    EXT=a
++    TARGET := $(TARGET_NAME)_libretro_libnx.$(EXT)
++    DEFINES := -DSWITCH=1 -U__linux__ -U__linux -DRARCH_INTERNAL
++    CFLAGS := $(DEFINES) -g -O3 -fPIE $(SWITCH2_CPU) -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -Wl,--allow-multiple-definition -specs=$(LIBNX)/switch.specs
++    CFLAGS += $(INCDIRS)
++    CFLAGS += $(INCLUDE)  -D__SWITCH__ -D__SWITCH2__
++    CXXFLAGS := $(ASFLAGS) $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
++    CFLAGS += -std=gnu11
++    STATIC_LINKING = 1
++
++# Classic Platforms ####################
++# Platform affix = classic_<ISA>_<µARCH>
++# Help at https://modmyclassic.com/comp
++
+ # (armv7 a7, hard point, neon based) ### 
+ # NESC, SNESC, C64 mini 
+ else ifeq ($(platform), classic_armv7_a7)

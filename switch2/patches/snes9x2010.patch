@@ -1,0 +1,46 @@
+diff --git a/Makefile.libretro b/Makefile.libretro
+index ee08bc3..9d91d60 100644
+--- a/Makefile.libretro
++++ b/Makefile.libretro
+@@ -521,6 +521,23 @@ else ifeq ($(platform), libnx)
+ 	STATIC_LINKING = 1
+ 	STATIC_LINKING_LINK=1
+ 
++# Windows MSVC 2003 Xbox 1
++# libounce (Switch 2)
++else ifeq ($(platform), libounce)
++	include $(DEVKITPRO)/libounce/switch2_rules
++	EXT=a
++	TARGET := $(TARGET_NAME)_libretro_libnx.$(EXT)
++	DEFINES :=  -DSWITCH=1 -U__linux__ -U__linux -DRARCH_INTERNAL
++	CFLAGS :=   $(DEFINES) -g \
++				-O3 \
++				-fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -Wl,--allow-multiple-definition -specs=$(LIBNX)/switch.specs
++	CFLAGS += $(INCDIRS)
++	CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -D__SWITCH2__ -DARM $(SWITCH2_CPU) -mtp=soft
++	CXXFLAGS := $(ASFLAGS) $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
++	CFLAGS += -std=gnu11
++	STATIC_LINKING = 1
++	STATIC_LINKING_LINK=1
++
+ # Windows MSVC 2003 Xbox 1
+ else ifeq ($(platform), xbox1_msvc2003)
+ TARGET := $(TARGET_NAME)_libretro_xdk1.lib
+diff --git a/libretro/libretro-common/features/features_cpu.c b/libretro/libretro-common/features/features_cpu.c
+index 895c38e..02bf558 100644
+--- a/libretro/libretro-common/features/features_cpu.c
++++ b/libretro/libretro-common/features/features_cpu.c
+@@ -243,7 +243,13 @@ retro_time_t cpu_features_get_time_usec(void)
+ #elif defined(WIIU)
+    return ticks_to_us(OSGetSystemTime());
+ #elif defined(SWITCH) || defined(HAVE_LIBNX)
++#ifdef __SWITCH2__
++   /* The Switch 2's system tick is 31.25 MHz, not the Switch's 19.2 MHz:
++    * taken as 19.2 MHz, time ran 1.63 times too fast */
++   return armTicksToNs(armGetSystemTick()) / 1000;
++#else
+    return (svcGetSystemTick() * 10) / 192;
++#endif
+ #elif defined(_3DS)
+    return osGetTime() * 1000;
+ #elif defined(_POSIX_MONOTONIC_CLOCK) || defined(__QNX__) || defined(ANDROID) || defined(__MACH__)

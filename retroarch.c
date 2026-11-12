@@ -7376,9 +7376,54 @@ int rarch_main(int argc, char *argv[], void *data)
       int ret;
       bool app_exit     = false;
       ui_companion_driver_wimp_iterate();
+#ifdef __SWITCH2__
+      {
+         extern long long sw2_menu_watch_until, sw2_menu_iter_us;
+         extern void sw2_trace(const char *);
+         extern void sw2_evt_dump(void);
+         static long long sw2_prev_end;
+         static unsigned sw2_n, sw2_slow;
+         static long long sw2_max;
+         long long t0 = (long long)cpu_features_get_time_usec(), t1, t2;
+         sw2_menu_iter_us = 0;
+         ret = runloop_iterate();
+         t1 = (long long)cpu_features_get_time_usec();
+         task_queue_check();
+         t2 = (long long)cpu_features_get_time_usec();
+         if (sw2_menu_watch_until)
+         {
+            /* gap: the time since the last iteration ended (outside both) */
+            long long it = t2 - (sw2_prev_end ? sw2_prev_end : t0);
+            sw2_n++;
+            if (it > sw2_max)
+               sw2_max = it;
+            if (it > 20000)
+            {
+               char m[160];
+               sw2_slow++;
+               snprintf(m, sizeof(m), "menuwatch: iter=%lldus run=%lldus menu=%lldus tasks=%lldus gap=%lldus",
+                        it, t1 - t0, sw2_menu_iter_us, t2 - t1,
+                        sw2_prev_end ? t0 - sw2_prev_end : 0);
+               sw2_trace(m);
+            }
+            if (t2 > sw2_menu_watch_until)
+            {
+               char m[96];
+               snprintf(m, sizeof(m), "menuwatch: end iters=%u slow=%u max=%lldus", sw2_n, sw2_slow, sw2_max);
+               sw2_trace(m);
+               sw2_evt_dump();
+               sw2_menu_watch_until = 0;
+               sw2_n = sw2_slow = 0;
+               sw2_max = 0;
+            }
+         }
+         sw2_prev_end = t2;
+      }
+#else
       ret = runloop_iterate();
 
       task_queue_check();
+#endif
 
 #ifdef HAVE_MIST
    steam_poll();

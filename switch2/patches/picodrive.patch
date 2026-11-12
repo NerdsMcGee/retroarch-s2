@@ -1,5 +1,5 @@
 diff --git a/Makefile.libretro b/Makefile.libretro
-index af871cb..f4264fd 100644
+index af871cb..9bc855e 100644
 --- a/Makefile.libretro
 +++ b/Makefile.libretro
 @@ -324,6 +324,18 @@ else ifeq ($(platform), libnx)
@@ -13,7 +13,7 @@ index af871cb..f4264fd 100644
 +	CFLAGS += -O3 -fomit-frame-pointer -ffast-math -I$(DEVKITPRO)/libounce/include/ -fPIE -Wl,--allow-multiple-definition
 +	CFLAGS += -specs=$(DEVKITPRO)/libounce/switch.specs
 +	CFLAGS += -D__SWITCH__ -DHAVE_LIBNX -D__SWITCH2__
-+	CFLAGS += -DARM -D__aarch64__=1 -march=armv8-a -mtune=cortex-a57 -mtp=soft -ffast-math -mcpu=cortex-a57+crc+fp+simd -ffunction-sections
++	CFLAGS += -DARM -D__aarch64__=1 -mtp=soft -ffast-math $(SWITCH2_CPU) -ffunction-sections
 +	CFLAGS += -Ifrontend/switch -ftree-vectorize
 +	STATIC_LINKING=1
 +	STATIC_LINKING_LINK = 1

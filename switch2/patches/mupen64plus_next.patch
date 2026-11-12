@@ -1,0 +1,1033 @@
+diff --git a/GLideN64/src/CommonPluginAPI.cpp b/GLideN64/src/CommonPluginAPI.cpp
+index 5dd846b..afd1dfd 100644
+--- a/GLideN64/src/CommonPluginAPI.cpp
++++ b/GLideN64/src/CommonPluginAPI.cpp
+@@ -9,85 +9,107 @@
+ 
+ extern "C" {
+ 
++#if defined(__SWITCH2__)
++extern "C" void sw2_glsm_bind_now(void);
++#define SW2_GL() sw2_glsm_bind_now()
++#else
++#define SW2_GL()
++#endif
+ EXPORT BOOL CALL gln64InitiateGFX (GFX_INFO Gfx_Info)
+ {
++	SW2_GL();
+ 	return api().InitiateGFX(Gfx_Info);
+ }
+ 
+ EXPORT void CALL gln64MoveScreen (int xpos, int ypos)
+ {
++	SW2_GL();
+ 	api().MoveScreen(xpos, ypos);
+ }
+ 
+ EXPORT void CALL gln64ProcessDList(void)
+ {
++	SW2_GL();
+ 	api().ProcessDList();
+ }
+ 
+ EXPORT void CALL gln64ProcessRDPList(void)
+ {
++	SW2_GL();
+ 	api().ProcessRDPList();
+ }
+ 
+ EXPORT void CALL gln64RomClosed (void)
+ {
++	SW2_GL();
+ 	api().RomClosed();
+ }
+ 
+ EXPORT void CALL gln64ShowCFB (void)
+ {
++	SW2_GL();
+ 	api().ShowCFB();
+ }
+ 
+ EXPORT void CALL gln64UpdateScreen (void)
+ {
++	SW2_GL();
+ 	api().UpdateScreen();
+ }
+ 
+ EXPORT void CALL gln64ViStatusChanged (void)
+ {
++	SW2_GL();
+ 	api().ViStatusChanged();
+ }
+ 
+ EXPORT void CALL gln64ViWidthChanged (void)
+ {
++	SW2_GL();
+ 	api().ViWidthChanged();
+ }
+ 
+ EXPORT void CALL gln64ChangeWindow(void)
+ {
++	SW2_GL();
+ 	api().ChangeWindow();
+ }
+ 
+ EXPORT void CALL gln64FBWrite(unsigned int addr, unsigned int size)
+ {
++	SW2_GL();
+ 	api().FBWrite(addr, size);
+ }
+ 
+ EXPORT void CALL gln64FBRead(unsigned int addr)
+ {
++	SW2_GL();
+ 	api().FBRead(addr);
+ }
+ 
+ EXPORT void CALL gln64FBGetFrameBufferInfo(void *pinfo)
+ {
++	SW2_GL();
+ 	api().FBGetFrameBufferInfo(pinfo);
+ }
+ 
+ #ifndef MUPENPLUSAPI
+ EXPORT void CALL gln64FBWList(FrameBufferModifyEntry *plist, unsigned int size)
+ {
++	SW2_GL();
+ 	api().FBWList(plist, size);
+ }
+ #endif
+ 
+ EXPORT void CALL gln64DestroyGfxContext(void)
+ {
++	SW2_GL();
+ 	dwnd().destroyGfxContext();
+ }
+ 
+ EXPORT void CALL gln64ReinitGfxContext(void)
+ {
++	SW2_GL();
+ 	dwnd().reinitGfxContext();
+ }
+ }
+diff --git a/GLideN64/src/DisplayWindow.cpp b/GLideN64/src/DisplayWindow.cpp
+index c817af3..e9d8623 100644
+--- a/GLideN64/src/DisplayWindow.cpp
++++ b/GLideN64/src/DisplayWindow.cpp
+@@ -8,6 +8,7 @@
+ #include "PluginAPI.h"
+ #include "FrameBuffer.h"
+ 
++extern "C" void sw2_trace(const char *msg);
+ bool DisplayWindow::start()
+ {
+ 	if (!_start())
+@@ -15,8 +16,11 @@ bool DisplayWindow::start()
+ 
+ 	graphics::ObjectHandle::defaultFramebuffer = _getDefaultFramebuffer();
+ 
++	sw2_trace("n64: gfxContext.init");
+ 	gfxContext.init();
++	sw2_trace("n64: drawer initData");
+ 	m_drawer._initData();
++	sw2_trace("n64: drawer initData done");
+ 	m_buffersSwapCount = 0;
+ 
+ 	// only query max MSAA when needed
+diff --git a/GLideN64/src/Graphics/OpenGLContext/GLSL/glsl_CombinerProgramBuilder.cpp b/GLideN64/src/Graphics/OpenGLContext/GLSL/glsl_CombinerProgramBuilder.cpp
+index f0552f9..344cb96 100644
+--- a/GLideN64/src/Graphics/OpenGLContext/GLSL/glsl_CombinerProgramBuilder.cpp
++++ b/GLideN64/src/Graphics/OpenGLContext/GLSL/glsl_CombinerProgramBuilder.cpp
+@@ -342,10 +342,29 @@ CombinerInputs CombinerProgramBuilder::compileCombiner(const CombinerKey & _key,
+ 	return inputs;
+ }
+ 
++#if defined(__SWITCH2__)
++#include <switch.h>
++extern "C" unsigned sw2_n64_shaders;
++extern "C" unsigned long long sw2_n64_shader_ticks, sw2_n64_shader_max;
++namespace {
++struct Sw2ShaderTimer {
++	u64 t0 = armGetSystemTick();
++	~Sw2ShaderTimer() {
++		const u64 dt = armGetSystemTick() - t0;
++		sw2_n64_shaders++;
++		sw2_n64_shader_ticks += dt;
++		if (dt > sw2_n64_shader_max) sw2_n64_shader_max = dt;
++	}
++};
++}
++#endif
+ graphics::CombinerProgram * CombinerProgramBuilder::buildCombinerProgram(Combiner & _color,
+ 																		Combiner & _alpha,
+ 																		const CombinerKey & _key)
+ {
++#if defined(__SWITCH2__)
++	Sw2ShaderTimer sw2_timer;
++#endif
+ 	CombinerProgramBuilder::s_cycleType = _key.getCycleType();
+ 	CombinerProgramBuilder::s_textureConvert.setMode(_key.getBilerp());
+ 
+diff --git a/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp b/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp
+index c1e51b5..2741646 100644
+--- a/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp
++++ b/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp
+@@ -1,3 +1,4 @@
++#include <cstdio>
+ #include <Log.h>
+ #include <Config.h>
+ #include "opengl_Utils.h"
+@@ -27,8 +28,10 @@ void APIENTRY on_gl_error(GLenum source,
+ 	LOG(LOG_ERROR, "%s", message);
+ }
+ 
++extern "C" void sw2_trace(const char *msg);
+ void GLInfo::init() {
+ 	const char * strDriverVersion = reinterpret_cast<const char *>(glGetString(GL_VERSION));
++	{ char m[160]; snprintf(m, sizeof(m), "n64: GL_VERSION=%s", strDriverVersion ? strDriverVersion : "(null)"); sw2_trace(m); }
+ 	isGLESX = strstr(strDriverVersion, "OpenGL ES") != nullptr;
+ 	isGLES2 = strstr(strDriverVersion, "OpenGL ES 2") != nullptr;
+ 	if (isGLES2) {
+@@ -141,6 +144,14 @@ void GLInfo::init() {
+ 			Utils::isExtensionSupported(*this, "GL_ARB_texture_storage");
+ 
+ 	shaderStorage = false;
++	{
++		GLint n = 0;
++		glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &n);
++		char m[128];
++		snprintf(m, sizeof(m), "n64: program binary formats=%d (shader storage option=%d)", (int)n,
++		         (int)config.generalEmulation.enableShadersStorage);
++		sw2_trace(m);
++	}
+ 	if (config.generalEmulation.enableShadersStorage != 0) {
+ 		const char * strGetProgramBinary = isGLESX
+ 			? "GL_OES_get_program_binary"
+@@ -149,6 +160,7 @@ void GLInfo::init() {
+ 			GLint numBinaryFormats = 0;
+ 			glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &numBinaryFormats);
+ 			shaderStorage = numBinaryFormats > 0;
++			{ char m[96]; snprintf(m, sizeof(m), "n64: program binary formats=%d", (int)numBinaryFormats); sw2_trace(m); }
+ 		}
+ 	}
+ 
+diff --git a/GLideN64/src/MupenPlusPluginAPI.cpp b/GLideN64/src/MupenPlusPluginAPI.cpp
+index 8c7f474..6f61d6e 100644
+--- a/GLideN64/src/MupenPlusPluginAPI.cpp
++++ b/GLideN64/src/MupenPlusPluginAPI.cpp
+@@ -9,8 +9,15 @@ extern size_t rdram_size;
+ 
+ extern "C" {
+ 
++#if defined(__SWITCH2__)
++extern "C" void sw2_glsm_bind_now(void);
++#define SW2_GL() sw2_glsm_bind_now()
++#else
++#define SW2_GL()
++#endif
+ EXPORT int CALL gln64RomOpen(void)
+ {
++	SW2_GL();
+ 	if (rdram_size != 0)
+ 		RDRAMSize = rdram_size - 1;
+ 	else
+@@ -27,6 +34,7 @@ EXPORT m64p_error CALL gln64PluginGetVersion(
+ 	int * _Capabilities
+ )
+ {
++	SW2_GL();
+ 	return api().PluginGetVersion(_PluginType, _PluginVersion, _APIVersion, _PluginNamePtr, _Capabilities);
+ }
+ 
+@@ -36,26 +44,31 @@ EXPORT m64p_error CALL gln64PluginStartup(
+ 	void (*DebugCallback)(void *, int, const char *)
+ )
+ {
++	SW2_GL();
+ 	return api().PluginStartup(CoreLibHandle, Context, DebugCallback);
+ }
+ 
+ EXPORT m64p_error CALL gln64PluginShutdown(void)
+ {
++	SW2_GL();
+ 	return api().PluginShutdown();
+ }
+ 
+ EXPORT void CALL gln64ReadScreen2(void *dest, int *width, int *height, int front)
+ {
++	SW2_GL();
+ 	api().ReadScreen2(dest, width, height, front);
+ }
+ 
+ EXPORT void CALL gln64SetRenderingCallback(void (*callback)(int))
+ {
++	SW2_GL();
+ 	api().SetRenderingCallback(callback);
+ }
+ 
+ EXPORT void CALL gln64ResizeVideoOutput(int width, int height)
+ {
++	SW2_GL();
+ 	api().ResizeVideoOutput(width, height);
+ }
+ 
+diff --git a/GLideN64/src/common/CommonAPIImpl_common.cpp b/GLideN64/src/common/CommonAPIImpl_common.cpp
+index f3415a6..471c92e 100644
+--- a/GLideN64/src/common/CommonAPIImpl_common.cpp
++++ b/GLideN64/src/common/CommonAPIImpl_common.cpp
+@@ -196,6 +196,7 @@ void PluginAPI::RomClosed()
+ 	//osal_keys_quit();
+ }
+ 
++extern "C" void sw2_trace(const char *msg);
+ int PluginAPI::RomOpen()
+ {
+ 	//osal_keys_init();
+@@ -208,11 +209,16 @@ int PluginAPI::RomOpen()
+ 	m_pluginThreadCv.wait(m_pluginThreadMtx);
+ 	m_pluginThreadMtx.unlock();
+ #else
++	sw2_trace("n64: RSP_Init");
+ 	RSP_Init();
++	sw2_trace("n64: GBI.init");
+ 	GBI.init();
++	sw2_trace("n64: Config_LoadConfig");
+ 	Config_LoadConfig();
++	sw2_trace("n64: dwnd start");
+ 	if (!dwnd().start())
+ 		return 0;
++	sw2_trace("n64: dwnd started");
+ #endif
+ 
+ 	m_bRomOpen = true;
+diff --git a/Makefile b/Makefile
+index 2443f80..b1aa40e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -219,6 +219,30 @@ else ifeq ($(platform), libnx)
+    WITH_DYNAREC = aarch64
+    STATIC_LINKING = 1
+ 
++# Nintendo Switch 2 (libounce)
++# switch2_rules: LIBNX is libounce, Switch 2 portlibs headers and libraries
++# come before the Switch 1 ones, __SWITCH__/__SWITCH2__ are in CPPFLAGS.
++else ifeq ($(platform), libounce)
++   include $(DEVKITPRO)/libounce/switch2_rules
++   .DEFAULT_GOAL := all
++   DEPSDIR := $(CURDIR)
++   STRINGS := $(PREFIX)$(STRINGS)
++   EGL := 1
++   PIC = 1
++   TARGET := $(TARGET_NAME)_libretro_libnx.a
++   CPUOPTS := -g $(SWITCH2_CPU) -mtp=soft
++   PLATCFLAGS = -O3 -ffast-math -funsafe-math-optimizations -fPIE -I$(PORTLIBS)/include/ -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -specs=$(LIBNX)/switch.specs
++   PLATCFLAGS += $(INCLUDE) -DSWITCH -DHAVE_LIBNX -D_GLIBCXX_USE_C99_MATH_TR1 -D_LDBL_EQ_DBL -funroll-loops
++   # the libounce rules assemble .S files with CPPFLAGS + ASFLAGS
++   ASFLAGS = $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS)
++   CXXFLAGS += -fno-rtti -std=gnu++11
++   COREFLAGS += -DOS_LINUX -DEGL
++   GLES = 0
++   GLES3 = 1
++   HAVE_THR_AL = 1
++   WITH_DYNAREC = aarch64
++   STATIC_LINKING = 1
++
+ # Jetson Xavier NX
+ else ifeq ($(platform), jetson-xavier)
+    TARGET := $(TARGET_NAME)_libretro.so
+@@ -655,7 +679,7 @@ ifeq ($(DEBUG), 1)
+    CPUOPTS += -DOPENGL_DEBUG
+ else
+    CPUOPTS += -DNDEBUG -fsigned-char -ffast-math -fno-strict-aliasing -fomit-frame-pointer -fvisibility=hidden
+-ifneq ($(platform), libnx)
++ifeq (,$(filter $(platform),libnx libounce))
+    CPUOPTS := -O3 $(CPUOPTS)
+ endif
+    CXXFLAGS += -fvisibility-inlines-hidden
+@@ -728,3 +752,9 @@ clean:
+ 	rm -f $(TARGET)
+ 
+ .PHONY: clean
++
++# libounce: the assembly rule from switch2_rules is the one used for .S
++# files, so the generated dynarec header is a prerequisite of each of them
++ifeq ($(platform), libounce)
++$(SOURCES_ASM:.S=.o): $(AWK_DEST_DIR)/asm_defines_gas.h
++endif
+diff --git a/Makefile.common b/Makefile.common
+index 72aef3a..ee25db1 100644
+--- a/Makefile.common
++++ b/Makefile.common
+@@ -467,7 +467,7 @@ endif
+ 
+ SOURCES_C += $(LIBRETRO_COMM_DIR)/libco/libco.c
+ 
+-ifeq ($(platform), $(filter $(platform), rpi3 rpi4 libnx jetson-xavier))
++ifeq ($(platform), $(filter $(platform), rpi3 rpi4 libnx libounce jetson-xavier))
+ 	SOURCES_CXX += $(VIDEODIR_GLIDEN64)/src/CRC32_ARMV8.cpp
+ else
+ 	SOURCES_CXX += $(VIDEODIR_GLIDEN64)/src/CRC_OPT.cpp
+diff --git a/libretro-common/glsm/glsm.c b/libretro-common/glsm/glsm.c
+index b3e8c60..b3ee2b9 100644
+--- a/libretro-common/glsm/glsm.c
++++ b/libretro-common/glsm/glsm.c
+@@ -3340,6 +3340,33 @@ void* glsm_get_proc_address(const char* sym)
+ }
+ 
+ extern void initGLFunctions();
++#ifdef __SWITCH2__
++#include <switch.h>
++extern void sw2_gl_ctx_ensure(void) __attribute__((weak));
++/* Switch 2: the GL context is handed between the core's thread and the
++ * video thread, and the frontend takes it back for the core only when
++ * the core needs it, after the video thread's present of the last frame.
++ * The bind at the start of retro_run() is put off until the renderer is
++ * entered (sw2_glsm_bind_now(), called by GLideN64's plugin API), so a
++ * frame in which the game draws nothing does not wait for that present. */
++static int sw2_glsm_bind_pending;
++void sw2_glsm_bind_now(void)
++{
++   if (!sw2_glsm_bind_pending)
++      return;
++   sw2_glsm_bind_pending = 0;
++   {
++      extern unsigned long long sw2_n64_bind_ticks, sw2_n64_bind_max;
++      const u64 t0 = armGetSystemTick();
++      if (sw2_gl_ctx_ensure)
++         sw2_gl_ctx_ensure();
++      glsm_state_bind();
++      const u64 dt = armGetSystemTick() - t0;
++      sw2_n64_bind_ticks += dt;
++      if (dt > sw2_n64_bind_max) sw2_n64_bind_max = dt;
++   }
++}
++#endif
+ bool glsm_ctl(enum glsm_state_ctl state, void *data)
+ {
+    switch (state)
+@@ -3385,10 +3412,21 @@ bool glsm_ctl(enum glsm_state_ctl state, void *data)
+          glsm_state_setup();
+          break;
+       case GLSM_CTL_STATE_UNBIND:
++#ifdef __SWITCH2__
++         if (sw2_glsm_bind_pending)
++         {
++            sw2_glsm_bind_pending = 0;
++            break;
++         }
++#endif
+          glsm_state_unbind();
+          break;
+       case GLSM_CTL_STATE_BIND:
++#ifdef __SWITCH2__
++         sw2_glsm_bind_pending = 1;
++#else
+          glsm_state_bind();
++#endif
+          break;
+       case GLSM_CTL_NONE:
+       default:
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 4a9f129..4682fb7 100644
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -37,6 +37,27 @@
+ #endif
+ #include <pthread.h>
+ #include <glsm/glsmsym.h>
++#if defined(__SWITCH2__)
++extern void sw2_trace(const char *msg);
++#define SW2T(s) sw2_trace(s)
++/* Stutter profile, reported every 300 frames from retro_run():
++ * JIT publishes (assem_arm64.c), blocks compiled (new_dynarec.c),
++ * GLideN64 combiner shaders built (glsl_CombinerProgramBuilder.cpp). */
++unsigned sw2_n64_pub_calls, sw2_n64_pub_fail;
++unsigned long long sw2_n64_pub_bytes, sw2_n64_pub_ticks, sw2_n64_pub_max;
++unsigned sw2_n64_blocks, sw2_n64_block_insns, sw2_n64_block_insn_max;
++unsigned long long sw2_n64_block_ticks, sw2_n64_block_max;
++unsigned sw2_n64_shaders;
++extern unsigned long long sw2_n64_pass[11];
++extern unsigned long long sw2_n64_block_cpu;
++unsigned sw2_f_blocks, sw2_f_inv, sw2_f_dirty, sw2_f_insns;
++unsigned long long sw2_f_block_ticks;
++unsigned long long sw2_n64_bind_ticks, sw2_n64_bind_max, sw2_n64_emu_ticks, sw2_n64_emu_max;
++unsigned sw2_n64_emu_slow;
++unsigned long long sw2_n64_shader_ticks, sw2_n64_shader_max;
++#else
++#define SW2T(s)
++#endif
+ 
+ #include "api/m64p_frontend.h"
+ #include "api/m64p_types.h"
+@@ -447,6 +468,7 @@ static void emu_step_initialize(void)
+ 
+ static void* EmuThreadFunction(void* param)
+ {
++    SW2T("n64: EmuThread start");
+     uint32_t netplay_port = 0;
+     uint16_t netplay_player = 1;
+ 
+@@ -481,6 +503,7 @@ static void* EmuThreadFunction(void* param)
+ #endif
+ 
+     log_cb(RETRO_LOG_DEBUG, CORE_NAME ": [EmuThread] M64CMD_EXECUTE\n");
++    SW2T("n64: M64CMD_EXECUTE");
+ 
+     // Runs until CMD_STOP
+     CoreDoCommand(M64CMD_EXECUTE, 0, NULL);
+@@ -692,6 +715,7 @@ void copy_file(char * ininame, char * fileName)
+ 
+ void retro_init(void)
+ {
++    SW2T("n64: retro_init");
+     char* sys_pathname;
+     wchar_t w_pathname[PATH_SIZE];
+     environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sys_pathname);
+@@ -741,7 +765,20 @@ void retro_deinit(void)
+        if(!(current_rdp_type == RDP_PLUGIN_GLIDEN64 && EnableThreadedRenderer))
+        {
+            CoreDoCommand(M64CMD_STOP, 0, NULL);
++#if defined(__SWITCH2__)
++           /* GLideN64's ROM close saves the shader cache through GL: the
++              core's thread needs the GL context, which the video thread may
++              hold (taken on GLideN64's first entry, see glsm.c) */
++           SW2T("n64: deinit: last run");
++           if (current_rdp_type == RDP_PLUGIN_GLIDEN64)
++              glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
++           co_switch(game_thread); /* Let the core thread finish */
++           if (current_rdp_type == RDP_PLUGIN_GLIDEN64)
++              glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
++           SW2T("n64: deinit: last run done");
++#else
+            co_switch(game_thread); /* Let the core thread finish */
++#endif
+            CoreDoCommand(M64CMD_ROM_CLOSE, 0, NULL);
+        }
+     }
+@@ -1807,6 +1844,7 @@ void context_reset(void)
+     if(current_rdp_type == RDP_PLUGIN_GLIDEN64)
+     {
+        log_cb(RETRO_LOG_DEBUG, CORE_NAME ": context_reset()\n");
++       SW2T("n64: context_reset");
+        glsm_ctl(GLSM_CTL_STATE_CONTEXT_RESET, NULL);
+        if (!context_setup_first_init)
+        {
+@@ -2042,8 +2080,81 @@ void retro_unload_game(void)
+     retro_savestate_complete = false;
+ }
+ 
++#if defined(__SWITCH2__)
++static void sw2_n64_report(unsigned long long dt)
++{
++    static unsigned frames, slow, very_slow;
++    static unsigned long long sum, max;
++    static unsigned fno;
++    const unsigned long long f = armGetSystemTickFreq();
++    fno++;
++    /* a slow frame, with what the dynarec did in it */
++    /* (inv and dirty: counted since the last traced frame) */
++    if (dt * 1000000ull / f > 45000 || sw2_f_blocks > 50) {
++        char m[200];
++        snprintf(m, sizeof(m), "n64frame: #%u run=%uus blocks=%u insns=%u compile=%uus inv=%u dirty=%u",
++                 fno, (unsigned)(dt * 1000000ull / f), sw2_f_blocks, sw2_f_insns,
++                 (unsigned)(sw2_f_block_ticks * 1000000ull / f), sw2_f_inv, sw2_f_dirty);
++        sw2_trace(m);
++        sw2_f_inv = sw2_f_dirty = 0;
++    }
++    sw2_f_blocks = sw2_f_insns = 0;
++    sw2_f_block_ticks = 0;
++    frames++;
++    sum += dt;
++    if (dt > max) max = dt;
++    if (dt * 1000000ull / f > 16700) slow++;
++    if (dt * 1000000ull / f > 33300) very_slow++;
++    if (frames < 300)
++        return;
++    {
++        char m[300];
++#define US(t) ((unsigned)((t) * 1000000ull / f))
++        snprintf(m, sizeof(m), "n64prof: run avg=%uus max=%uus >16.7=%u >33.3=%u | bind avg=%uus max=%uus | emu avg=%uus max=%uus >16.7=%u | pub n=%u kb=%u total=%uus max=%uus | blocks n=%u insns avg=%u max=%u total=%uus max=%uus | shaders n=%u total=%uus max=%uus",
++                 US(sum / frames), US(max), slow, very_slow,
++                 US(sw2_n64_bind_ticks / frames), US(sw2_n64_bind_max), US(sw2_n64_emu_ticks / frames), US(sw2_n64_emu_max), sw2_n64_emu_slow,
++                 sw2_n64_pub_calls, (unsigned)(sw2_n64_pub_bytes >> 10), US(sw2_n64_pub_ticks), US(sw2_n64_pub_max),
++                 sw2_n64_blocks, sw2_n64_blocks ? sw2_n64_block_insns / sw2_n64_blocks : 0, sw2_n64_block_insn_max,
++                 US(sw2_n64_block_ticks), US(sw2_n64_block_max),
++                 sw2_n64_shaders, US(sw2_n64_shader_ticks), US(sw2_n64_shader_max));
++        sw2_trace(m);
++        if (sw2_n64_blocks) {
++            snprintf(m, sizeof(m), "n64blk: pre=%u p1=%u p2=%u p3=%u p4=%u p5=%u p6=%u p7=%u p8=%u p9=%u p10=%u (us)",
++                     US(sw2_n64_pass[0]), US(sw2_n64_pass[1]), US(sw2_n64_pass[2]), US(sw2_n64_pass[3]),
++                     US(sw2_n64_pass[4]), US(sw2_n64_pass[5]), US(sw2_n64_pass[6]), US(sw2_n64_pass[7]),
++                     US(sw2_n64_pass[8]), US(sw2_n64_pass[9]), US(sw2_n64_pass[10]));
++            sw2_trace(m);
++        }
++        if (sw2_n64_blocks) {
++            snprintf(m, sizeof(m), "n64cpu: blocks wall=%uus cpu=%uus core=%d",
++                     US(sw2_n64_block_ticks), US(sw2_n64_block_cpu), (int)svcGetCurrentProcessorNumber());
++            sw2_trace(m);
++        }
++        sw2_n64_block_cpu = 0;
++        memset(sw2_n64_pass, 0, sizeof(sw2_n64_pass));
++#undef US
++    }
++    frames = slow = very_slow = 0;
++    sum = max = 0;
++    sw2_n64_pub_calls = 0; sw2_n64_pub_bytes = sw2_n64_pub_ticks = sw2_n64_pub_max = 0;
++    sw2_n64_blocks = 0; sw2_n64_block_insns = sw2_n64_block_insn_max = 0; sw2_n64_block_ticks = sw2_n64_block_max = 0;
++    sw2_n64_shaders = 0; sw2_n64_shader_ticks = sw2_n64_shader_max = 0;
++    sw2_n64_bind_ticks = sw2_n64_bind_max = sw2_n64_emu_ticks = sw2_n64_emu_max = 0;
++    sw2_n64_emu_slow = 0;
++}
++#endif
+ void retro_run (void)
+ {
++#if defined(__SWITCH2__)
++    const unsigned long long sw2_t0 = armGetSystemTick();
++    static int sw2_freq_logged;
++    if (!sw2_freq_logged) {
++        char m[64];
++        snprintf(m, sizeof(m), "n64prof: tick freq=%llu", (unsigned long long)armGetSystemTickFreq());
++        sw2_trace(m);
++        sw2_freq_logged = 1;
++    }
++#endif
+     libretro_swap_buffer = false;
+     static bool updated = false;
+ 
+@@ -2061,10 +2172,25 @@ void retro_run (void)
+           }
+        }
+        
++#if defined(__SWITCH2__)
++       glsm_ctl(GLSM_CTL_STATE_BIND, NULL);   /* the wait is timed in sw2_glsm_bind_now() */
++#else
+        glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
++#endif
+     }
+ 
++#if defined(__SWITCH2__)
++    {
++       const u64 e0 = armGetSystemTick();
++       co_switch(game_thread);
++       const u64 ed = armGetSystemTick() - e0;
++       sw2_n64_emu_ticks += ed;
++       if (ed > sw2_n64_emu_max) sw2_n64_emu_max = ed;
++       if (ed * 1000000ull / armGetSystemTickFreq() > 16700) sw2_n64_emu_slow++;
++    }
++#else
+     co_switch(game_thread);
++#endif
+ 
+     if(current_rdp_type == RDP_PLUGIN_GLIDEN64)
+     {
+@@ -2098,6 +2224,9 @@ void retro_run (void)
+         // screen_pitch will be 0 for GLN
+         video_cb(NULL, retro_screen_width, retro_screen_height, screen_pitch);
+     }
++#if defined(__SWITCH2__)
++    sw2_n64_report(armGetSystemTick() - sw2_t0);
++#endif
+ }
+ 
+ void retro_reset (void)
+diff --git a/libretro/libretro_core_options.h b/libretro/libretro_core_options.h
+index fb39aa9..204e7fe 100644
+--- a/libretro/libretro_core_options.h
++++ b/libretro/libretro_core_options.h
+@@ -527,6 +527,9 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+         },
+         "False"
+     },
++#endif
++/* SW2: shader cache option: the driver has program binaries */
++#if !defined(VC) && (!defined(HAVE_OPENGLES) || defined(__SWITCH2__))
+     {
+         CORE_NAME "-EnableShadersStorage",
+         "Cache GPU Shaders",
+diff --git a/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c b/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
+index 98dea54..0eb1edb 100644
+--- a/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
++++ b/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
+@@ -261,8 +261,44 @@ static uintptr_t jump_table_symbols[] = {
+   (intptr_t)breakpoint
+ };
+ 
++#if defined(__SWITCH2__)
++extern Jit sw2_n64_jit;
++extern int sw2_n64_jit_ready;
++extern void sw2_trace(const char *msg);
++extern unsigned sw2_n64_pub_calls, sw2_n64_pub_fail;
++extern unsigned long long sw2_n64_pub_bytes, sw2_n64_pub_ticks, sw2_n64_pub_max;
++#endif
+ static void cache_flush(char* start, char* end)
+ {
++#if defined(__SWITCH2__)
++    if (sw2_n64_jit_ready) {
++        uintptr_t rx = (uintptr_t)jitGetRxAddr(&sw2_n64_jit);
++        uintptr_t s = (uintptr_t)start, e = (uintptr_t)end;
++        /* whole 64-byte lines, as cache maintenance covers: do_clear_cache
++           passes page + 4095, which a byte-exact publish cuts one byte short */
++        s &= ~(uintptr_t)63;
++        e = (e + 63) & ~(uintptr_t)63;
++        if (s < rx) s = rx;
++        if (e > rx + sw2_n64_jit.size) e = rx + sw2_n64_jit.size;
++        if (e <= s) return;
++        OuncehenJitRange r = { (u64)(s - rx), (u64)(e - s) };
++        const u64 t0 = armGetSystemTick();
++        Result rc = ouncehenJitPublishRanges(&sw2_n64_jit, &r, 1);
++        const u64 dt = armGetSystemTick() - t0;
++        sw2_n64_pub_calls++;
++        sw2_n64_pub_bytes += r.size;
++        sw2_n64_pub_ticks += dt;
++        if (dt > sw2_n64_pub_max) sw2_n64_pub_max = dt;
++        if (R_FAILED(rc)) {
++            char m[128];
++            snprintf(m, sizeof(m), "n64: publish FAILED rc=%x off=%llx size=%llx", (unsigned)rc,
++                     (unsigned long long)r.offset, (unsigned long long)r.size);
++            sw2_trace(m);
++            if (sw2_n64_pub_fail++ == 0) abort();
++        }
++        return;
++    }
++#endif
+ #ifndef WIN32
+     // Don't rely on GCC's __clear_cache implementation, as it caches
+     // icache/dcache cache line sizes, that can vary between cores on
+@@ -4666,5 +4702,9 @@ static void arch_init(void) {
+     ptr3+=2;
+   }
+ 
++#if defined(__SWITCH2__)
++  cache_flush((char *)base_addr_rx+(1<<TARGET_SIZE_2)-JUMP_TABLE_SIZE,(char *)base_addr_rx+(1<<TARGET_SIZE_2));
++#else
+   __clear_cache((char *)base_addr+(1<<TARGET_SIZE_2)-JUMP_TABLE_SIZE,(char *)base_addr+(1<<TARGET_SIZE_2));
++#endif
+ }
+diff --git a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
+index 1e8f261..c7323b9 100644
+--- a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
++++ b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
+@@ -56,7 +56,21 @@
+ #include "device/rcp/rsp/rsp_core.h"
+ 
+ #if !defined(WIN32)
+-#ifndef HAVE_LIBNX
++#if defined(__SWITCH2__)
++#include <switch.h>
++#include <ouncehen.h>
++#include <stdio.h>
++/* Switch 2: code is written to the staging (rw) view and made runnable by
++   publishing it to the rx view; see cache_flush() in arm64/assem_arm64.c */
++Jit sw2_n64_jit;
++int sw2_n64_jit_ready;
++static u64 sw2_thread_ticks(void);
++/* per frame: blocks compiled and their time, invalidate_block() calls,
++   blocks reused from the dirty list after verifying their source */
++extern unsigned sw2_f_blocks, sw2_f_inv, sw2_f_dirty, sw2_f_insns;
++extern unsigned long long sw2_f_block_ticks;
++extern void sw2_trace(const char *msg);
++#elif !defined(HAVE_LIBNX)
+ #include <sys/mman.h>
+ #else
+ #include "../../../../../switch/mman.h"
+@@ -2638,6 +2652,9 @@ void *dynamic_linker(void * src, u_int vaddr)
+ 
+   head=get_dirty(r4300,vaddr,~0);
+   if(head!=NULL){
++#if defined(__SWITCH2__)
++    sw2_f_dirty++;
++#endif
+     if(ht_bin[0]&&ht_bin[0]->vaddr==vaddr) {
+       ht_bin[0]=head; // Replace existing entry
+     }
+@@ -2882,6 +2899,9 @@ static void invalidate_page(u_int page)
+ 
+ void invalidate_block(u_int block)
+ {
++#if defined(__SWITCH2__)
++  sw2_f_inv++;
++#endif
+   u_int page;
+   page=block^0x80000;
+   if(block<0x100000&&page>262143&&g_dev.r4300.cp0.tlb.LUT_r[block]) page=(g_dev.r4300.cp0.tlb.LUT_r[block]^0x80000000)>>12;
+@@ -8703,12 +8723,15 @@ static void pagespan_ds(void)
+ }
+ 
+ /**** Recompiler ****/
+-#ifdef HAVE_LIBNX
++#if defined(HAVE_LIBNX) && !defined(__SWITCH2__)
+ ALIGN(4096, char jit_memory[33554432]) __attribute__((section(".text")));
+ #endif
+ void new_dynarec_init(void)
+ {
+   DebugMessage(M64MSG_INFO, "Init new dynarec");
++#if defined(__SWITCH2__)
++  sw2_trace("n64: new_dynarec_init");
++#endif
+   ensure_dynarec_cache_alignment();
+ 
+ #if defined(RECOMPILER_DEBUG) && !defined(RECOMP_DBG)
+@@ -8730,7 +8753,24 @@ void new_dynarec_init(void)
+ #endif
+ 
+ #if CACHE_ADDR==DOUBLE_CACHE_ADDR
+-#ifdef HAVE_LIBNX
++#if defined(__SWITCH2__)
++  {
++    char m[160];
++    Result rc = jitCreate(&sw2_n64_jit, 1<<TARGET_SIZE_2);
++    snprintf(m, sizeof(m), "n64: jitCreate rc=%x type=%d rw=%p rx=%p exec=%d", (unsigned)rc, (int)sw2_n64_jit.type,
++             jitGetRwAddr(&sw2_n64_jit), jitGetRxAddr(&sw2_n64_jit), (int)sw2_n64_jit.is_executable);
++    sw2_trace(m);
++    if (R_FAILED(rc)) abort();
++    if (sw2_n64_jit.is_executable) {
++      rc = jitTransitionToWritable(&sw2_n64_jit);
++      snprintf(m, sizeof(m), "n64: to_writable rc=%x", (unsigned)rc);
++      sw2_trace(m);
++    }
++    base_addr = jitGetRwAddr(&sw2_n64_jit);
++    base_addr_rx = jitGetRxAddr(&sw2_n64_jit);
++    sw2_n64_jit_ready = 1;
++  }
++#elif defined(HAVE_LIBNX)
+   base_addr = mmap((u_char *)jit_memory, 1<<TARGET_SIZE_2, 0,0,0,0);
+   base_addr_rx = (void*)jit_memory;
+ #else
+@@ -8810,7 +8850,34 @@ void new_dynarec_init(void)
+   // Copy this into local area so we don't have to put it in every literal pool
+   g_dev.r4300.new_dynarec_hot_state.invc_ptr=g_dev.r4300.cached_interp.invalid_code;
+ #endif
+-#ifdef HAVE_LIBNX
++#if defined(__SWITCH2__)
++  /* Blocks end at a jal, as on other platforms. The Switch 1 build
++     compiled on past it (speculative precompilation), which made blocks
++     of up to MAXBLOCK/2 instructions whose compile took up to 17 ms;
++     /retroarch-n64-jal0.on brings that back for comparison. */
++  {
++    FILE *f = fopen("/retroarch-n64-jal0.on", "rb");
++    stop_after_jal = f ? 0 : 1;
++    if (f) fclose(f);
++    sw2_trace(stop_after_jal ? "n64: stop_after_jal=1" : "n64: stop_after_jal=0 (flag)");
++    {
++      volatile unsigned acc = 1;
++      unsigned i;
++      char m[160];
++      const u64 c0 = sw2_thread_ticks();
++      const u64 t0 = armGetSystemTick();
++      for (i = 0; i < 20000000u; i++)
++        acc = acc * 1664525u + 1013904223u;
++      const u64 dt = armGetSystemTick() - t0;
++      const u64 dc = sw2_thread_ticks() - c0;
++      snprintf(m, sizeof(m), "n64cpu: calib 20M iters wall=%lluus cpu=%lluus core=%d",
++               (unsigned long long)(dt * 1000000ull / armGetSystemTickFreq()),
++               (unsigned long long)(dc * 1000000ull / armGetSystemTickFreq()),
++               (int)svcGetCurrentProcessorNumber());
++      sw2_trace(m);
++    }
++  }
++#elif defined(HAVE_LIBNX)
+   stop_after_jal=0;
+ #else
+   stop_after_jal=1;
+@@ -8825,7 +8892,13 @@ void new_dynarec_init(void)
+     g_dev.r4300.new_dynarec_hot_state.memory_map[n]=(uintptr_t)-1;
+ 
+   tlb_speed_hacks();
++#if defined(__SWITCH2__)
++  sw2_trace("n64: arch_init");
++#endif
+   arch_init();
++#if defined(__SWITCH2__)
++  sw2_trace("n64: arch_init done");
++#endif
+ }
+ 
+ void new_dynarec_cleanup(void)
+@@ -8842,6 +8915,9 @@ void new_dynarec_cleanup(void)
+ #if !defined(RECOMP_DBG)
+   #if defined(WIN32)
+     VirtualFree(base_addr, 0, MEM_RELEASE);
++  #elif defined(__SWITCH2__)
++    sw2_n64_jit_ready = 0;
++    jitClose(&sw2_n64_jit);
+   #elif NEW_DYNAREC == NEW_DYNAREC_ARM64 && CACHE_ADDR!=FIXED_CACHE_ADDR
+     if (munmap (base_addr_rx, 1<<TARGET_SIZE_2) < 0) {DebugMessage(M64MSG_ERROR, "munmap() failed");}
+   #else
+@@ -8853,8 +8929,49 @@ void new_dynarec_cleanup(void)
+ #endif
+ }
+ 
++#if defined(__SWITCH2__)
++/* time in each part of new_recompile_block: [0] before pass 1, [1..10]
++   passes 1-10; reported and cleared by libretro.c */
++unsigned long long sw2_n64_pass[11];
++static u64 sw2_thread_ticks(void);
++static u64 sw2_pass_t;
++#define SW2_PASS(k) do { u64 sw2_now = armGetSystemTick(); sw2_n64_pass[k] += sw2_now - sw2_pass_t; sw2_pass_t = sw2_now; } while (0)
++extern unsigned sw2_n64_blocks, sw2_n64_block_insns, sw2_n64_block_insn_max;
++extern unsigned long long sw2_n64_block_ticks, sw2_n64_block_max;
++static int new_recompile_block_impl(int addr);
++unsigned long long sw2_n64_block_cpu;
++static u64 sw2_thread_ticks(void)
++{
++  u64 v = 0;
++  svcGetInfo(&v, InfoType_ThreadTickCount, CUR_THREAD_HANDLE, TickCountInfo_Total);
++  return v;
++}
+ int new_recompile_block(int addr)
+ {
++  const u64 c0 = sw2_thread_ticks();
++  const u64 t0 = armGetSystemTick();
++  int r = new_recompile_block_impl(addr);
++  const u64 dt = armGetSystemTick() - t0;
++  sw2_n64_block_cpu += sw2_thread_ticks() - c0;
++  sw2_f_blocks++;
++  sw2_f_insns += (unsigned)slen;
++  sw2_f_block_ticks += dt;
++  sw2_n64_blocks++;
++  sw2_n64_block_insns += (unsigned)slen;
++  if ((unsigned)slen > sw2_n64_block_insn_max) sw2_n64_block_insn_max = (unsigned)slen;
++  sw2_n64_block_ticks += dt;
++  if (dt > sw2_n64_block_max) sw2_n64_block_max = dt;
++  return r;
++}
++static int new_recompile_block_impl(int addr)
++#else
++int new_recompile_block(int addr)
++#define SW2_PASS(k)
++#endif
++{
++#if defined(__SWITCH2__)
++  sw2_pass_t = armGetSystemTick();
++#endif
+ #if defined(RECOMPILER_DEBUG) && !defined(RECOMP_DBG)
+   recomp_dbg_block(addr);
+ #endif
+@@ -8925,6 +9042,7 @@ int new_recompile_block(int addr)
+   //DebugMessage(M64MSG_VERBOSE, "addr = %x source = %x %x", addr,source,source[0]);
+ 
+   /* Pass 1 disassembly */
++  SW2_PASS(0);
+ 
+   for(i=0;!done;i++) {
+     bt[i]=0;likely[i]=0;ooo[i]=0;op2=0;
+@@ -9464,10 +9582,12 @@ int new_recompile_block(int addr)
+   assert(slen>0);
+ 
+   /* Pass 2 - Register dependencies and branch targets */
++  SW2_PASS(1);
+ 
+   unneeded_registers(0,slen-1,0);
+ 
+   /* Pass 3 - Register allocation */
++  SW2_PASS(2);
+ 
+   struct regstat current; // Current register allocations/status
+   current.is32=1;
+@@ -10456,6 +10576,7 @@ int new_recompile_block(int addr)
+   }
+ 
+   /* Pass 4 - Cull unused host registers */
++  SW2_PASS(3);
+ 
+   uint64_t nr=0LL;
+ 
+@@ -10730,6 +10851,7 @@ int new_recompile_block(int addr)
+   }
+ 
+   /* Pass 5 - Pre-allocate registers */
++  SW2_PASS(4);
+ 
+   // If a register is allocated during a loop, try to allocate it for the
+   // entire loop, if possible.  This avoids loading/storing registers
+@@ -11454,9 +11576,11 @@ int new_recompile_block(int addr)
+   }
+ 
+   /* Pass 6 - Optimize clean/dirty state */
++  SW2_PASS(5);
+   clean_registers(0,slen-1,1);
+ 
+   /* Pass 7 - Identify 32-bit registers */
++  SW2_PASS(6);
+ 
+   provisional_r32();
+ 
+@@ -11577,6 +11701,7 @@ int new_recompile_block(int addr)
+   }
+ 
+   /* Pass 8 - Assembly */
++  SW2_PASS(7);
+   linkcount=0;stubcount=0;
+   ds=0;is_delayslot=0;
+   cop1_usable=0;
+@@ -11800,6 +11925,7 @@ int new_recompile_block(int addr)
+   }
+ 
+   /* Pass 9 - Linker */
++  SW2_PASS(8);
+   for(i=0;i<linkcount;i++)
+   {
+     assem_debug("%8x -> %8x",link_addr[i][0],link_addr[i][1]);
+@@ -11933,6 +12059,7 @@ int new_recompile_block(int addr)
+   }
+ 
+   /* Pass 10 - Free memory by expiring oldest blocks */
++  SW2_PASS(9);
+ 
+   int end=((((intptr_t)out-(intptr_t)base_addr)>>(TARGET_SIZE_2-16))+16384)&65535;
+   while(expirep!=end)
+@@ -11983,5 +12110,6 @@ int new_recompile_block(int addr)
+     }
+     expirep=(expirep+1)&65535;
+   }
++  SW2_PASS(10);
+   return 0;
+ }
+diff --git a/mupen64plus-core/src/main/main.c b/mupen64plus-core/src/main/main.c
+index 620f4ce..dd05655 100644
+--- a/mupen64plus-core/src/main/main.c
++++ b/mupen64plus-core/src/main/main.c
+@@ -1363,8 +1363,15 @@ extern audio_plugin_functions dummy_audio;
+ unsigned int r4300_emumode;
+ size_t rdram_size;
+ 
++#if defined(__SWITCH2__)
++extern void sw2_trace(const char *msg);
++#define SW2T(s) sw2_trace(s)
++#else
++#define SW2T(s)
++#endif
+ m64p_error main_run(void)
+ {
++    SW2T("n64: main_run");
+     size_t i, k;
+     uint32_t count_per_op;
+     uint32_t count_per_op_denom_pot;
+@@ -1704,12 +1711,14 @@ m64p_error main_run(void)
+                 dd_rom_size,
+                 &dd_disk, dd_idisk);
+ 
++    SW2T("n64: init_device done");
+     // Attach rom to plugins
+     failure_rval = M64ERR_PLUGIN_FAIL;
+     if (!gfx.romOpen())
+     {
+         goto on_gfx_open_failure;
+     }
++    SW2T("n64: gfx romOpen done");
+     if (!audio.romOpen())
+     {
+         goto on_audio_open_failure;
+@@ -1725,9 +1734,11 @@ m64p_error main_run(void)
+     g_EmulatorRunning = 1;
+     StateChanged(M64CORE_EMU_STATE, M64EMU_RUNNING);
+ 
++    SW2T("n64: poweron");
+     poweron_device(&g_dev);
++    SW2T("n64: pif hle");
+     pif_bootrom_hle_execute(&g_dev.r4300);
+-
++    SW2T("n64: run_device");
+     run_device(&g_dev);
+ 
+     /* release gb_carts */

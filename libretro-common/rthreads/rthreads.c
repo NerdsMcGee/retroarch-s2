@@ -1260,6 +1260,16 @@ static sthread_t *sthread_create_ex(void (*thread_func)(void*),
        * the process's default core. */
       s32 prio = 0x2C;
       Result rc;
+      int core = -2;
+#ifdef __SWITCH2__
+      /* Off the creator's core: on the default core a worker - the video
+       * thread above all - waits for the main thread to block before it
+       * runs, and the main thread runs the emulator flat out. Cores 1
+       * and 2 in turn; the default core where the kernel will not have
+       * it elsewhere. */
+      static unsigned sw2_next_core;
+      core = 1 + (int)(sw2_next_core++ % 2);
+#endif
 
       switch_reap();
       svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
@@ -1267,14 +1277,29 @@ static sthread_t *sthread_create_ex(void (*thread_func)(void*),
       {
          s32 want = 0x3F - ((thread_priority - 1) * (0x3F - 0x1C)) / 99;
          rc       = threadCreate(&thread->t, thread_wrap, data,
-               NULL, stack, want, -2);
+               NULL, stack, want, core);
          if (R_FAILED(rc))
             rc    = threadCreate(&thread->t, thread_wrap, data,
-                  NULL, stack, prio, -2);
+                  NULL, stack, prio, core);
       }
       else
          rc       = threadCreate(&thread->t, thread_wrap, data,
+               NULL, stack, prio, core);
+#ifdef __SWITCH2__
+      {
+         extern void sw2_trace(const char *);
+         extern int snprintf(char *, size_t, const char *, ...);
+         char m[96];
+         snprintf(m, sizeof(m), "thread on core %d: rc=%08x", core, (unsigned)rc);
+         sw2_trace(m);
+      }
+      if (R_FAILED(rc) && core != -2)
+      {
+         core = -2;
+         rc   = threadCreate(&thread->t, thread_wrap, data,
                NULL, stack, prio, -2);
+      }
+#endif
 
       if (R_SUCCEEDED(rc))
       {

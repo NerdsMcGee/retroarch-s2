@@ -1,5 +1,5 @@
 diff --git a/libretro/Makefile b/libretro/Makefile
-index 776580a..873b8b2 100644
+index 776580a..3eb65a9 100644
 --- a/libretro/Makefile
 +++ b/libretro/Makefile
 @@ -468,6 +468,26 @@ else ifeq ($(platform), libnx)
@@ -17,7 +17,7 @@ index 776580a..873b8b2 100644
 +    CFLAGS	:=	 $(DEFINES) -g -O3 \
 +                 -fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -Wl,--allow-multiple-definition -specs=$(LIBNX)/switch.specs
 +    CFLAGS += $(INCDIRS)
-+    CFLAGS	+=	-D__SWITCH__ -D__SWITCH2__ -DHAVE_LIBNX -march=armv8-a -mtune=cortex-a57 -mtp=soft
++    CFLAGS	+=	-D__SWITCH__ -D__SWITCH2__ -DHAVE_LIBNX $(SWITCH2_CPU) -mtp=soft
 +    CXXFLAGS := $(ASFLAGS) $(CFLAGS) -fno-rtti -std=gnu++11
 +    CFLAGS += -std=gnu11
 +    STATIC_LINKING = 1

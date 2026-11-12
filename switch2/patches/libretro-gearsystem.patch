@@ -1,5 +1,5 @@
 diff --git a/platforms/libretro/Makefile b/platforms/libretro/Makefile
-index 40c6e49..905ed44 100644
+index 40c6e49..83ade50 100644
 --- a/platforms/libretro/Makefile
 +++ b/platforms/libretro/Makefile
 @@ -129,6 +129,16 @@ else ifeq ($(platform), libnx)
@@ -12,7 +12,7 @@ index 40c6e49..905ed44 100644
 +	TARGET := $(TARGET_NAME)_libretro_libnx.a
 +	DEFINES := -D__SWITCH__ -D__SWITCH2__ -DHAVE_LIBNX
 +	PLATFORM_FLAGS += $(DEFINES) -fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -specs=$(LIBNX)/switch.specs
-+	PLATFORM_FLAGS += -march=armv8-a -mtune=cortex-a57 -mtp=soft -mcpu=cortex-a57+crc+fp+simd -ffast-math
++	PLATFORM_FLAGS += -mtp=soft $(SWITCH2_CPU) -ffast-math
 +	PLATFORM_FLAGS := $(ASFLAGS) $(PLATFORM_FLAGS) -DMINIZ_NO_TIME -Wall
 +	STATIC_LINKING=1
 +# Nintendo Game Cube / Wii / WiiU

@@ -1,5 +1,5 @@
 diff --git a/src/os/libretro/Makefile b/src/os/libretro/Makefile
-index 12459cb..9db7804 100644
+index 12459cb..0122005 100644
 --- a/src/os/libretro/Makefile
 +++ b/src/os/libretro/Makefile
 @@ -179,6 +179,24 @@ else ifeq ($(platform), libnx)
@@ -17,7 +17,7 @@ index 12459cb..9db7804 100644
 +   # whether POSIX names exist at all - and libretro.cxx calls strdup. devkitA64
 +   # has it; the header just will not declare it without this.
 +   CXXFLAGS += $(DEFINES) -D_GNU_SOURCE -fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -specs=$(LIBNX)/switch.specs
-+   CXXFLAGS += -march=armv8-a -mtune=cortex-a57 -mtp=soft -mcpu=cortex-a57+crc+fp+simd -ffast-math $(ASFLAGS)
++   CXXFLAGS += -mtp=soft $(SWITCH2_CPU) -ffast-math $(ASFLAGS)
 +   STATIC_LINKING = 1
 +
 +# Classic Platforms ####################

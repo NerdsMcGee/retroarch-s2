@@ -1,5 +1,5 @@
 diff --git a/Makefile b/Makefile
-index be005e4..0c2c959 100644
+index be005e4..85c3ce9 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -304,6 +304,20 @@ include $(DEVKITPRO)/libnx/switch_rules
@@ -13,7 +13,7 @@ index be005e4..0c2c959 100644
 +    EXT=a
 +    TARGET := $(TARGET_NAME)_libretro_libnx.$(EXT)
 +    DEFINES := -DSWITCH=1 -U__linux__ -U__linux -DRARCH_INTERNAL
-+    CFLAGS  :=  $(DEFINES) -g -O2 -fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -Wl,--allow-multiple-definition -specs=$(LIBNX)/switch.specs
++    CFLAGS  :=  $(DEFINES) -g -O2 -fPIE $(SWITCH2_CPU) -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -Wl,--allow-multiple-definition -specs=$(LIBNX)/switch.specs
 +    CFLAGS += $(INCDIRS)
 +    CFLAGS  += $(INCLUDE)  -D__SWITCH__ -D__SWITCH2__
 +    CXXFLAGS := $(ASFLAGS) $(CFLAGS) -fexceptions -fno-rtti -std=gnu++11 

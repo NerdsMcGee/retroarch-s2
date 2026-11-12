@@ -1,3 +1,4 @@
+# base: libretro/flycast 6db95c1
 diff --git a/Makefile b/Makefile
 index 4131c29..85b8861 100644
 --- a/Makefile
@@ -41,6 +42,52 @@ index 4131c29..85b8861 100644
  else ifeq ($(platform), emscripten)
  else
  	HAVE_MMAP ?= 1
+diff --git a/core/hw/gdrom/gdromv3.cpp b/core/hw/gdrom/gdromv3.cpp
+index e382316..90cc5c7 100644
+--- a/core/hw/gdrom/gdromv3.cpp
++++ b/core/hw/gdrom/gdromv3.cpp
+@@ -4,6 +4,9 @@
+ */
+ 
+ #include "gdromv3.h"
++#include <stdio.h>
++extern "C" void sw2_trace(const char *m);
++#define GDT(...) do { static int gdc__; if (gdc__++ < 400) { char m__[96]; snprintf(m__, sizeof(m__), __VA_ARGS__); sw2_trace(m__); } } while (0)
+ #include "hw/mem/_vmem.h"
+ 
+ #include "types.h"
+@@ -148,6 +151,7 @@ void gd_set_state(gd_states state)
+ {
+ 	gd_states prev=gd_state;
+ 	gd_state=state;
++	GDT("fc: gd_set_state %d", (int)state);
+ 	switch(state)
+ 	{
+ 		case gds_waitcmd:
+@@ -760,6 +764,7 @@ static void gd_spi_invalid_field()
+ 
+ void gd_process_spi_cmd()
+ {
++	GDT("fc: spi cmd %02x", packet_cmd.data_8[0]);
+ 
+ 	printf_spi("Sense: %02x %02x %02x", sns_asc, sns_ascq, sns_key);
+ 
+@@ -1367,6 +1372,7 @@ static int GDRomschd(int i, int c, int j)
+ #endif
+ 
+ 	u32 len_backup = len;
++	GDT("fc: gd dma xfer len=%u dir=%d", (unsigned)len, (int)SB_GDDIR);
+ 	if(1 == SB_GDDIR) 
+ 	{
+ 		while(len)
+@@ -1446,6 +1452,7 @@ static int GDRomschd(int i, int c, int j)
+ //DMA Start
+ void GDROM_DmaStart(u32 addr, u32 data)
+ {
++	GDT("fc: gd dma start addr=%08x len=%d", (unsigned)SB_GDSTAR, (int)SB_GDLEN);
+ 	if (SB_GDEN==0)
+ 	{
+ 		INFO_LOG(GDROM, "Invalid GD-DMA start, SB_GDEN=0.Ignoring it.");
 diff --git a/core/hw/mem/_vmem.cpp b/core/hw/mem/_vmem.cpp
 index fb0ac69..93dbec8 100644
 --- a/core/hw/mem/_vmem.cpp
@@ -64,6 +111,229 @@ index fb0ac69..93dbec8 100644
  		if (mem_b.data)
  			memset(mem_b.data + RAM_SIZE, 0, PAGE_SIZE);
  		if (vram.data)
+diff --git a/core/hw/pvr/pvr_mem.cpp b/core/hw/pvr/pvr_mem.cpp
+index 442b1fc..92280f9 100644
+--- a/core/hw/pvr/pvr_mem.cpp
++++ b/core/hw/pvr/pvr_mem.cpp
+@@ -11,6 +11,31 @@
+ 
+ #include "hw/holly/sb.h"
+ #include "hw/holly/holly_intc.h"
++#include "rend/TexCache.h"
++#include "hw/mem/_vmem.h"
++#include "rend/rtt_watch.h"
++
++#ifdef __SWITCH2__
++/* Horizon does not hand a write fault to the core, so video memory that
++ * textures were made from is not made read-only here: the page is opened
++ * and marked as written in software before each write instead. */
++static inline void vram_soft_read(u32 offset)
++{
++	offset &= VRAM_MASK;
++	if (_vmem_vram_page_watched(offset / PAGE_SIZE))
++		rtt_watch_touch(offset & ~(u32)PAGE_MASK, PAGE_SIZE);
++}
++static inline void vram_soft_write(u32 offset)
++{
++	vram_soft_read(offset);
++	offset &= VRAM_MASK;
++	if (_vmem_vram_page_protected(offset / PAGE_SIZE))
++		VramLockedWriteOffset(offset);
++}
++#else
++#define vram_soft_write(x) do {} while (0)
++#define vram_soft_read(x) do {} while (0)
++#endif
+ 
+ 
+ //YUV converter code :)
+@@ -235,6 +260,7 @@ template<typename T>
+ T DYNACALL pvr_read_area1(u32 addr)
+ {
+ 	// aligned to its size: the last bytes of video memory are not a way out of it
++	vram_soft_read(pvr_map32(addr) & ~(sizeof(T) - 1));
+ 	return *(T *)&vram[pvr_map32(addr) & ~(sizeof(T) - 1)];
+ }
+ template u8 DYNACALL pvr_read_area1<u8>(u32 addr);
+@@ -254,6 +280,7 @@ void DYNACALL pvr_write_area1(u32 addr, T data)
+ 	if (vaddr >= fb_watch_addr_start && vaddr < fb_watch_addr_end)
+ 		fb_dirty = true;
+ 
++	vram_soft_write(pvr_map32(addr) & ~(sizeof(T) - 1));
+ 	*(T *)&vram[pvr_map32(addr) & ~(sizeof(T) - 1)] = data;
+ }
+ template void DYNACALL pvr_write_area1<u8>(u32 addr, u8 data);
+@@ -282,6 +309,7 @@ extern "C" void TAWriteSQ_to_vram(u32 address, u8* sq)
+    if (path64b)
+    {
+       // 64b path
++      vram_soft_write(address_w);
+       memcpy(&vram[address_w & VRAM_MASK], sq, 32);
+    }
+    else
+@@ -334,7 +362,10 @@ T DYNACALL pvr_read_area4(u32 addr)
+ 	if (access32)
+ 		return pvr_read_area1<T>(addr);
+ 	else
++	{
++		vram_soft_read(addr);
+ 		return *(T*)&vram[addr & VRAM_MASK];
++	}
+ }
+ template u8 DYNACALL pvr_read_area4<u8, false>(u32 addr);
+ template u16 DYNACALL pvr_read_area4<u16, false>(u32 addr);
+@@ -350,7 +381,10 @@ void DYNACALL pvr_write_area4(u32 addr, T data)
+ 	if (access32)
+ 		pvr_write_area1(addr, data);
+ 	else
++	{
++		vram_soft_write(addr);
+ 		*(T*)&vram[addr & VRAM_MASK] = data;
++	}
+ }
+ template void DYNACALL pvr_write_area4<u8, false>(u32 addr, u8 data);
+ template void DYNACALL pvr_write_area4<u16, false>(u32 addr, u16 data);
+diff --git a/core/hw/sh4/interpr/sh4_interpreter.cpp b/core/hw/sh4/interpr/sh4_interpreter.cpp
+index c3746ae..2f63832 100644
+--- a/core/hw/sh4/interpr/sh4_interpreter.cpp
++++ b/core/hw/sh4/interpr/sh4_interpreter.cpp
+@@ -17,6 +17,39 @@
+ 
+ #define CPU_RATIO      (8)
+ 
++#include <stdio.h>
++extern "C" void sw2_trace(const char *m);
++extern int sw2_frame;
++extern unsigned sw2_slice;
++static void sw2_insn_trace(u32 pc, u32 op)
++{
++	static int n;
++	if (n < 6000)
++	{
++		char m[96];
++		n++;
++		snprintf(m, sizeof(m), "fc: i %08x op %04x sp %08x r0 %08x r1 %08x", (unsigned)pc, (unsigned)op, (unsigned)r[15], (unsigned)r[0], (unsigned)r[1]);
++		sw2_trace(m);
++	}
++}
++unsigned sw2_slice;
++static void sw2_pc_trace(u32 pc)
++{
++	static unsigned slices;
++	static int n;
++	if (sw2_frame < 777)
++		return;
++	slices++;
++	sw2_slice = slices;
++	if (slices >= 11600 && n < 600)
++	{
++		char m[128];
++		n++;
++		snprintf(m, sizeof(m), "fc: pc %08x sp %08x pr %08x sr %08x f%d", (unsigned)pc, (unsigned)r[15], (unsigned)pr, (unsigned)sr.status, sw2_frame);
++		sw2_trace(m);
++	}
++}
++
+ sh4_icache icache;
+ sh4_ocache ocache;
+ 
+@@ -57,6 +90,7 @@ void Sh4_int_Run()
+ #endif
+          do
+          {
++			u32 pcx__ = next_pc;
+ 			u32 op = ReadNexOp();
+ 
+             ExecuteOpcode(op);
+diff --git a/core/hw/sh4/sh4_interrupts.cpp b/core/hw/sh4/sh4_interrupts.cpp
+index 7e9f195..8664957 100644
+--- a/core/hw/sh4/sh4_interrupts.cpp
++++ b/core/hw/sh4/sh4_interrupts.cpp
+@@ -9,6 +9,7 @@
+ 	is very fast !
+ */
+ 
++#include <stdio.h>
+ #include "types.h"
+ #include "sh4_interrupts.h"
+ #include "sh4_core.h"
+@@ -142,8 +143,11 @@ void ResetInterruptMask(InterruptID intr)
+ }
+ 
+ 
++extern "C" void sw2_trace(const char *m);
++extern int sw2_frame;
+ bool Do_Interrupt(u32 intEvn)
+ {
++	if (sw2_frame >= 765) { static int n__; if (n__++ < 600) { char m__[64]; snprintf(m__, sizeof(m__), "fc: Do_Interrupt %x f%d", (unsigned)intEvn, sw2_frame); sw2_trace(m__); } }
+ 	CCN_INTEVT = intEvn;
+ 
+ 	ssr = sh4_sr_GetFull();
+diff --git a/core/imgread/common.cpp b/core/imgread/common.cpp
+index a2c0a0a..3f41db4 100644
+--- a/core/imgread/common.cpp
++++ b/core/imgread/common.cpp
+@@ -1,5 +1,6 @@
+ #include "common.h"
+ #include "archive/archive.h"
++extern "C" void sw2_trace(const char *m);
+ 
+ Disc* chd_parse(const char* file);
+ Disc* gdi_parse(const char* file);
+@@ -301,9 +302,11 @@ void GetDriveSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
+       // no disc: blank sectors, not what the buffer held before
+       memset(buff, 0, (size_t)SectorCount * secsz);
+       return;
+-   }
++   }{ static int c__; if (c__++ < 300) { char m__[96]; snprintf(m__, sizeof(m__), "fc: disc ReadSectors start=%u cnt=%u sz=%u", (unsigned)StartSector, (unsigned)SectorCount, (unsigned)secsz); sw2_trace(m__); } }
++
+ 
+    disc->ReadSectors(StartSector,SectorCount,buff,secsz);
++   { static int c6__; if (c6__++ < 300) sw2_trace("fc: disc ReadSectors returned"); }
+ }
+ void GetDriveToc(u32* to,DiskArea area)
+ {
+diff --git a/core/imgread/common.h b/core/imgread/common.h
+index c24d0f6..cfe3d8e 100644
+--- a/core/imgread/common.h
++++ b/core/imgread/common.h
+@@ -3,6 +3,8 @@
+ #include <vector>
+ 
+ #include "deps/coreio/coreio.h"
++#include <stdio.h>
++extern "C" void sw2_trace(const char *m);
+ 
+ extern u32 NullDriveDiscType;
+ struct TocTrackInfo
+@@ -398,7 +400,9 @@ struct RawTrackFile : TrackFile
+ 
+ 		/* A file shorter than its track says gives part of a sector, or
+ 		 * none of it: the rest is blank, not what the buffer held before. */
++		{ static int c7__; if (c7__++ < 300) { char m__[96]; snprintf(m__, sizeof(m__), "fc: raw Read FAD=%u off=%u fmt=%u", (unsigned)FAD, (unsigned)(offset + FAD * fmt), (unsigned)fmt); sw2_trace(m__); } }
+ 		const size_t got = core_fread_at(file, (u32)(offset + FAD * fmt), dst, fmt);
++		{ static int c8__; if (c8__++ < 300) sw2_trace("fc: raw Read done"); }
+ 		if (got < fmt)
+ 			memset(dst + got, 0, fmt - got);
+ 	}
+diff --git a/core/libretro-common/features/features_cpu.c b/core/libretro-common/features/features_cpu.c
+index 868b674..183a6c7 100644
+--- a/core/libretro-common/features/features_cpu.c
++++ b/core/libretro-common/features/features_cpu.c
+@@ -264,7 +264,13 @@ retro_time_t cpu_features_get_time_usec(void)
+ #elif defined(WIIU)
+    return ticks_to_us(OSGetSystemTime());
+ #elif defined(SWITCH) || defined(HAVE_LIBNX)
++#ifdef __SWITCH2__
++   /* The Switch 2's system tick is 31.25 MHz, not the Switch's 19.2 MHz:
++    * taken as 19.2 MHz, time ran 1.63 times too fast */
++   return armTicksToNs(armGetSystemTick()) / 1000;
++#else
+    return (svcGetSystemTick() * 10) / 192;
++#endif
+ #elif defined(_3DS)
+    return osGetTime() * 1000;
+ #elif defined(_POSIX_MONOTONIC_CLOCK) || defined(__QNX__) || defined(ANDROID) || defined(__MACH__)
 diff --git a/core/libretro/common.cpp b/core/libretro/common.cpp
 index 3d981e9..7556ca3 100644
 --- a/core/libretro/common.cpp
@@ -78,10 +348,89 @@ index 3d981e9..7556ca3 100644
  {
  
 diff --git a/core/libretro/libretro.cpp b/core/libretro/libretro.cpp
-index 4687729..1b7b797 100644
+index 4687729..07713f5 100644
 --- a/core/libretro/libretro.cpp
 +++ b/core/libretro/libretro.cpp
-@@ -2959,8 +2959,10 @@ static void naomi_bios_detect_multiregion(void)
+@@ -1,6 +1,7 @@
+ #if defined(HAVE_VULKAN) || defined(HAVE_D3D11) || defined(HAVE_D3D12)
+ /* (the renderers that have the HDR output: Color Format) */
+ #define HAVE_HDR_OUTPUT
++#include <malloc.h>
+ #include "rend/hdr/hdr_libretro.h"
+ #include "rend/hdr/hdr_output.h"
+ #endif
+@@ -137,6 +138,7 @@ char slash = '/';
+ 
+ #include "libretro_core_option_defines.h"
+ #include "libretro_core_options.h"
++extern "C" void sw2_trace(const char *m);
+ 
+ u32 fskip;
+ extern int screen_width;
+@@ -1651,8 +1653,31 @@ static void rend_made_again(void)
+ /* the size of the picture handed over this frame, as video_cb is told it */
+ static void frame_size(unsigned *w, unsigned *h);
+ 
++int sw2_frame;
++#include <chrono>
++extern unsigned long long sw2_render_ns;
++static unsigned long long sw2_dc_ns, sw2_vcb_ns;
++static std::chrono::steady_clock::time_point sw2_perf_t0 = std::chrono::steady_clock::now();
++static void sw2_perf_report(int frame)
++{
++   if (frame % 120 != 0)
++      return;
++   auto now = std::chrono::steady_clock::now();
++   double wall = std::chrono::duration<double, std::milli>(now - sw2_perf_t0).count();
++   char m[160];
++   snprintf(m, sizeof(m), "fc: perf f%d wall=%.1fms/frame dc_run=%.1f render_cpu=%.1f video_cb=%.1f", frame, wall / 120.0,
++         sw2_dc_ns / 120e6, sw2_render_ns / 120e6, sw2_vcb_ns / 120e6);
++   sw2_trace(m);
++   sw2_dc_ns = sw2_vcb_ns = sw2_render_ns = 0;
++   sw2_perf_t0 = now;
++}
+ void retro_run (void)
+ {
++static int rr__ = 0; rr__++; { extern int sw2_frame; sw2_frame = rr__; }
++#define RRT(msg) do { static int rl__; if (rr__ > 1000000000 && rl__++ < 4000) { char m__[64]; snprintf(m__, sizeof(m__), "fc: f%d " msg, rr__); sw2_trace(m__); } } while (0)
++{ static int c__; if (c__++ < 30) sw2_trace("fc: retro_run"); }
++RRT("start");
++{ if (rr__ % 25000000 == 0) { u64 used__ = 0, tot__ = 0; svcGetInfo(&used__, 6, 0xFFFF8001u, 0); svcGetInfo(&tot__, 7, 0xFFFF8001u, 0); char m__[128]; snprintf(m__, sizeof(m__), "fc: mem f%d used=%lluK total=%lluK", rr__, (unsigned long long)(used__ >> 10), (unsigned long long)(tot__ >> 10)); sw2_trace(m__); } }
+    bool updated     = false;
+ 
+    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
+@@ -1835,7 +1860,11 @@ void retro_run (void)
+ 		   dc_reset(false);
+ 		   retro_atomic_store_release_int(&reset_requested, 0);
+ 	   }
++	   RRT("pre dc_run");
++	   auto pf0__ = std::chrono::steady_clock::now();
+ 	   dc_run();
++	   sw2_dc_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - pf0__).count();
++	   RRT("post dc_run");
+ 	   /* (a frame in which the game read no input polls all the same) */
+ 	   input_poll_once();
+ 
+@@ -1869,13 +1898,18 @@ void retro_run (void)
+    {
+       unsigned fw, fh;
+       frame_size(&fw, &fh);
++      auto pv0__ = std::chrono::steady_clock::now();
+       video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, fw, fh, 0);
++      sw2_vcb_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - pv0__).count();
+    }
+ #endif
++   RRT("post video_cb");
+    is_dupe = true;
+ 
+    /* Keep timing.fps in step with the actual emulated refresh rate. */
+    update_av_info_if_changed();
++   sw2_perf_report(rr__);
++   RRT("end");
+ }
+ 
+ void retro_reset (void)
+@@ -2959,8 +2993,10 @@ static void naomi_bios_detect_multiregion(void)
        NOTICE_LOG(NAOMI, "Multi-region BIOS: Korea set on the DIP switches");
  }
  
@@ -92,7 +441,7 @@ index 4687729..1b7b797 100644
     const char *dir = NULL;
     const char *vmu_dir = NULL;
  #ifdef _WIN32
-@@ -3260,7 +3262,9 @@ bool retro_load_game(const struct retro_game_info *game)
+@@ -3260,7 +3296,9 @@ bool retro_load_game(const struct retro_game_info *game)
        snprintf(nvmem_file2, sizeof(nvmem_file2), "%s%s.nvmem2", save_dir, g_base_name);
     }
  
@@ -102,7 +451,7 @@ index 4687729..1b7b797 100644
     // (again, for frames of the machine's size, now that it is known)
     ta_set_walk_check(ta_header_check);
  
-@@ -3271,6 +3275,7 @@ bool retro_load_game(const struct retro_game_info *game)
+@@ -3271,6 +3309,7 @@ bool retro_load_game(const struct retro_game_info *game)
     	ERROR_LOG(BOOT, "Initialization failed");
     	return false;
     }
@@ -111,7 +460,7 @@ index 4687729..1b7b797 100644
     midiffb_init();
     int rotation = rotate_screen ? 3 : 0;
 diff --git a/core/libretro/vmem_utils.cpp b/core/libretro/vmem_utils.cpp
-index 4a077e4..a70c86d 100644
+index 4a077e4..786a5bb 100644
 --- a/core/libretro/vmem_utils.cpp
 +++ b/core/libretro/vmem_utils.cpp
 @@ -22,6 +22,16 @@
@@ -131,6 +480,30 @@ index 4a077e4..a70c86d 100644
  FILE *	fmemopen (void *__restrict, size_t, const char *__restrict);
  #endif
  
+@@ -64,6 +74,12 @@ static size_t reserved_size;
+ 
+ bool mem_region_lock(void *start, size_t len)
+ {
++#ifdef __SWITCH2__
++	/* Horizon gives the core no write fault: video memory is checked in
++	 * software (hw/pvr/pvr_mem.cpp) and its pages are never made read-only. */
++	(void)start; (void)len;
++	return true;
++#endif
+ 	size_t inpage = (uintptr_t)start & PAGE_MASK;
+ 
+ #ifdef HAVE_LIBNX
+@@ -127,6 +143,10 @@ bool mem_region_unlock(void *start, size_t len)
+ /* No access at all: a read faults as a write does. */
+ bool mem_region_noaccess(void *start, size_t len)
+ {
++#ifdef __SWITCH2__
++	(void)start; (void)len;
++	return true;
++#endif
+ 	size_t inpage = (uintptr_t)start & PAGE_MASK;
+ 
+ #ifdef HAVE_LIBNX
 diff --git a/core/nullDC.cpp b/core/nullDC.cpp
 index 58c4f1f..729ce07 100644
 --- a/core/nullDC.cpp
@@ -188,3 +561,112 @@ index 58c4f1f..729ce07 100644
  
     dc_reset(true);
  
+diff --git a/core/rend/gles/gldraw.cpp b/core/rend/gles/gldraw.cpp
+index ecb3446..6e155f2 100644
+--- a/core/rend/gles/gldraw.cpp
++++ b/core/rend/gles/gldraw.cpp
+@@ -5,6 +5,7 @@
+ #include "rend/shadows.h"
+ #include "rend/modvol_clip.h"
+ #include <cstring>
++extern "C" void sw2_trace(const char *m);
+ 
+ /*
+ 
+@@ -826,6 +827,7 @@ static void DrawModVols(int first, int count, const RenderPass& previous_pass, c
+ 
+ void DrawStrips()
+ {
++{ static int c__; if (c__++ < 30) sw2_trace("fc: DrawStrips"); }
+ 	SetupMainVBO(pvrrc.gpu);
+ 	/* (a frame decoded on the GPU has its sorted passes sorted already, and
+ 	 * their indices went straight to the decoder's room for them when the
+diff --git a/core/rend/gles/gles.cpp b/core/rend/gles/gles.cpp
+index edc33f1..a5cfd54 100644
+--- a/core/rend/gles/gles.cpp
++++ b/core/rend/gles/gles.cpp
+@@ -9,6 +9,7 @@
+ #include "rend/grow_buf.h"
+ #include "ta_decoder_gl.h"
+ #include "glprogram_cache.h"
++extern "C" void sw2_trace(const char *m);
+ 
+ #ifndef GL_RED
+ #define GL_RED                            0x1903
+@@ -1410,8 +1411,16 @@ static void own_target_present(void)
+ #endif
+ }
+ 
++#include <chrono>
++unsigned long long sw2_render_ns;
++struct Sw2RenderTimer {
++	std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
++	~Sw2RenderTimer() { sw2_render_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(); }
++};
+ static bool RenderFrame(void)
+ {
++Sw2RenderTimer sw2_rt__;
++{ static int c__; if (c__++ < 30) sw2_trace("fc: RenderFrame"); }
+ 	int vmu_screen_number = 0 ;
+ 	bool own_target = false;
+ 	int lightgun_port = 0 ;
+diff --git a/core/rend/gles/gltex.cpp b/core/rend/gles/gltex.cpp
+index 1a06db6..23ad709 100644
+--- a/core/rend/gles/gltex.cpp
++++ b/core/rend/gles/gltex.cpp
+@@ -10,6 +10,7 @@
+ #include "rend/grow_buf.h"
+ #include "gl_texdecoder.h"
+ #include "hw/pvr/pvr_mem.h"
++extern "C" void sw2_trace(const char *m);
+ 
+ #ifndef GL_UNPACK_ROW_LENGTH
+ #define GL_UNPACK_ROW_LENGTH 0x0CF2
+@@ -142,6 +143,7 @@ GLPooledTexture *GLTexturePool::Make(int cls, bool late)
+ {
+ 	const u32 f = TexPoolBook::Format(cls);
+ 	const u32 width = TexPoolBook::Width(cls), height = TexPoolBook::Height(cls);
++	if (late) { static int c2__; if (c2__++ < 300) sw2_trace("fc: pool Make late pre"); }
+ 	GLPooledTexture *t = new GLPooledTexture();
+ 	t->levels = TexPoolBook::Mips(cls) ? 1 + bitscanrev(std::max(width, height)) : 1;
+ 	glGenTextures(1, &t->name);
+@@ -164,6 +166,7 @@ GLPooledTexture *GLTexturePool::Make(int cls, bool late)
+ 		return nullptr;
+ 	}
+ 	book.Made(t, cls, TexPoolBook::Bytes(cls, poolTexel[f]), late, poolNames[f]);
++	if (late) { static int c3__; if (c3__++ < 300) sw2_trace("fc: pool Make late done"); }
+ 	t->all = all;
+ 	all = t;
+ 	return t;
+@@ -612,6 +615,7 @@ void TextureCacheData::SetRendered(GLuint tex, GLPooledTexture *pooled)
+ 
+ void TextureCacheData::UploadToGPU(int width, int height, u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded)
+ {
++{ static int c__; if (c__++ < 40) sw2_trace("fc: UploadToGPU"); }
+ 	bool bound;
+ 	CancelDecode();
+ 	temp_tex_buffer = upload_ring_source(temp_tex_buffer, &bound);
+@@ -625,6 +629,7 @@ void TextureCacheData::UploadToGPUFrom(int width, int height, u8 *temp_tex_buffe
+ 	{
+ 		/* Into the pool's texture, made before the game with every level
+ 		 * it can have */
++		{ static int c4__; if (c4__++ < 400) sw2_trace("fc: up pooled"); }
+ 		glcache.BindTexture(GL_TEXTURE_2D, texID);
+ 		const u32 f = (u32)tex_type;
+ 		const u32 bpp = poolTexel[f];
+@@ -643,6 +648,7 @@ void TextureCacheData::UploadToGPUFrom(int width, int height, u8 *temp_tex_buffe
+ 		return;
+ 	}
+ 	ReleasePooled();
++	{ static int c5__; if (c5__++ < 400) sw2_trace("fc: up unpooled"); }
+ 	if (texID != 0)
+ 	{
+ 		//upload to OpenGL !
+@@ -793,6 +799,7 @@ bool TextureCacheData::PartMemory(size_t bytes, void **memory)
+ 
+ void TextureCacheData::UploadPart(const TexRegion *regions, u32 count, u8 *data, const size_t *offset)
+ {
++{ static int c__; if (c__++ < 40) sw2_trace("fc: UploadPart"); }
+ 	const u32 f = (u32)tex_type;
+ 	GLenum format, type;
+ 	u32 i;

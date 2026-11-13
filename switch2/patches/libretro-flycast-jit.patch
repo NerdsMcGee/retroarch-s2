@@ -1,6 +1,6 @@
 # base: libretro/flycast 6db95c1
 diff --git a/Makefile b/Makefile
-index 4131c29..819d98c 100644
+index 4131c29..b3ca2c3 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -484,7 +484,7 @@ else ifeq ($(platform), libnx)
@@ -12,7 +12,7 @@ index 4131c29..819d98c 100644
     WITH_DYNAREC=arm64
     HAVE_GENERIC_JIT = 0
     STATIC_LINKING = 1
-@@ -495,6 +495,28 @@ else ifeq ($(platform), libnx)
+@@ -495,6 +495,30 @@ else ifeq ($(platform), libnx)
     SOURCES_C += $(CORE_DIR)/core/deps/switch/stubs.c
  #######################################
  
@@ -27,6 +27,8 @@ index 4131c29..819d98c 100644
 +   CPUFLAGS += -mcpu=cortex-a78c+crypto -mtp=soft -ffast-math -frename-registers -funroll-loops -ftree-vectorize
 +   CFLAGS += $(CPUFLAGS) -DTARGET_LIBNX
 +   FORCE_GLES = 1
++   # Vulkan renderer: OunceVK, through RetroArch's vk_switch context
++   HAVE_VULKAN = 1
 +   CFLAGS += -I$(DEVKITPRO)/portlibs/switch2/include
 +   WITH_DYNAREC = arm64
 +   HAVE_GENERIC_JIT = 0
@@ -41,7 +43,7 @@ index 4131c29..819d98c 100644
  # Odroid-N2
  else ifeq ($(platform), odroid-n2)
  	EXT ?= so
-@@ -1248,6 +1270,7 @@ endif
+@@ -1248,6 +1272,7 @@ endif
  # Content files are memory-mapped where the platform has mmap().
  ifeq ($(WINDOWS_BUILD), 1)
  else ifeq ($(platform), libnx)
@@ -124,55 +126,11 @@ index ff9ffdd..85e9ad8 100644
  }
  
  void dsp_writenmem(u32 addr)
-diff --git a/core/hw/aica/sgc_if.cpp b/core/hw/aica/sgc_if.cpp
-index 5d8f6a9..7b7ab9e 100644
---- a/core/hw/aica/sgc_if.cpp
-+++ b/core/hw/aica/sgc_if.cpp
-@@ -1692,6 +1692,8 @@ void libCore_CDDA_Detach(void)
- 	}
- }
- 
-+#include <chrono>
-+extern unsigned long long sw2_dsp_ns;
- void AICA_Sample()
- {
- 	SampleType mixl,mixr;
-diff --git a/core/hw/arm7/arm7.cpp b/core/hw/arm7/arm7.cpp
-index 9830556..752fe26 100644
---- a/core/hw/arm7/arm7.cpp
-+++ b/core/hw/arm7/arm7.cpp
-@@ -91,13 +91,20 @@ void arm_Run_(u32 CycleCount)
- }
- #endif
- 
-+#include <chrono>
-+extern unsigned long long sw2_arm_ns, sw2_aica_ns, sw2_dsp_ns;
- #if FEAT_AREC == DYNAREC_NONE
- void aicaarm::run(u32 samples)
- {
- 	for (u32 i = 0; i < samples; i++)
- 	{
-+		auto t0 = std::chrono::steady_clock::now();
- 		arm_Run_(ARM_CYCLES_PER_SAMPLE);
-+		auto t1 = std::chrono::steady_clock::now();
- 		libAICA_TimeStep();
-+		auto t2 = std::chrono::steady_clock::now();
-+		sw2_arm_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-+		sw2_aica_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
- 	}
- }
- #endif
 diff --git a/core/hw/arm7/arm7_rec.cpp b/core/hw/arm7/arm7_rec.cpp
-index 844f169..26bd1c2 100644
+index 844f169..20dd5d3 100644
 --- a/core/hw/arm7/arm7_rec.cpp
 +++ b/core/hw/arm7/arm7_rec.cpp
-@@ -1,3 +1,5 @@
-+#include <chrono>
-+extern unsigned long long sw2_arm_ns, sw2_aica_ns;
- /*
- 	Copyright 2020 flyinghead
- 
-@@ -71,6 +73,9 @@ DECL_ALIGN(4096) static u8 ARM7_TCB[ICacheSize] __attribute__((section("__TEXT,
+@@ -71,6 +71,9 @@ DECL_ALIGN(4096) static u8 ARM7_TCB[ICacheSize] __attribute__((section("__TEXT,
  #endif
  
  ptrdiff_t rx_offset;
@@ -182,7 +140,7 @@ index 844f169..26bd1c2 100644
  
  #pragma pack(push,1)
  union ArmOpBits
-@@ -803,6 +808,15 @@ void init()
+@@ -803,6 +806,15 @@ void init()
  	}
  	if (ICache == nullptr)
  		return;
@@ -199,45 +157,18 @@ index 844f169..26bd1c2 100644
  	if (ICache == nullptr)
  	{
 diff --git a/core/hw/gdrom/gdromv3.cpp b/core/hw/gdrom/gdromv3.cpp
-index e382316..4db80cd 100644
+index e382316..96bc4c6 100644
 --- a/core/hw/gdrom/gdromv3.cpp
 +++ b/core/hw/gdrom/gdromv3.cpp
-@@ -4,6 +4,10 @@
+@@ -4,6 +4,7 @@
  */
  
  #include "gdromv3.h"
 +#include "hw/sh4/dyna/blockmanager.h"
-+#include <stdio.h>
-+extern "C" void sw2_trace(const char *m);
-+#define GDT(...) do { static int gdc__; if (gdc__++ < 400) { char m__[96]; snprintf(m__, sizeof(m__), __VA_ARGS__); sw2_trace(m__); } } while (0)
  #include "hw/mem/_vmem.h"
  
  #include "types.h"
-@@ -148,6 +152,7 @@ void gd_set_state(gd_states state)
- {
- 	gd_states prev=gd_state;
- 	gd_state=state;
-+	GDT("fc: gd_set_state %d", (int)state);
- 	switch(state)
- 	{
- 		case gds_waitcmd:
-@@ -760,6 +765,7 @@ static void gd_spi_invalid_field()
- 
- void gd_process_spi_cmd()
- {
-+	GDT("fc: spi cmd %02x", packet_cmd.data_8[0]);
- 
- 	printf_spi("Sense: %02x %02x %02x", sns_asc, sns_ascq, sns_key);
- 
-@@ -1367,6 +1373,7 @@ static int GDRomschd(int i, int c, int j)
- #endif
- 
- 	u32 len_backup = len;
-+	GDT("fc: gd dma xfer len=%u dir=%d", (unsigned)len, (int)SB_GDDIR);
- 	if(1 == SB_GDDIR) 
- 	{
- 		while(len)
-@@ -1396,6 +1403,7 @@ static int GDRomschd(int i, int c, int j)
+@@ -1396,6 +1397,7 @@ static int GDRomschd(int i, int c, int j)
  				{
  					if (n > read_params.remaining_sectors)
  						n = read_params.remaining_sectors;
@@ -245,16 +176,8 @@ index e382316..4db80cd 100644
  					libGDR_ReadSector((u8*)dst_ptr, read_params.start_sector, n, read_params.sector_type);
  					read_params.start_sector     += n;
  					read_params.remaining_sectors -= n;
-@@ -1446,6 +1454,7 @@ static int GDRomschd(int i, int c, int j)
- //DMA Start
- void GDROM_DmaStart(u32 addr, u32 data)
- {
-+	GDT("fc: gd dma start addr=%08x len=%d", (unsigned)SB_GDSTAR, (int)SB_GDLEN);
- 	if (SB_GDEN==0)
- 	{
- 		INFO_LOG(GDROM, "Invalid GD-DMA start, SB_GDEN=0.Ignoring it.");
 diff --git a/core/hw/mem/_vmem.cpp b/core/hw/mem/_vmem.cpp
-index fb0ac69..f283558 100644
+index fb0ac69..dfa4d0c 100644
 --- a/core/hw/mem/_vmem.cpp
 +++ b/core/hw/mem/_vmem.cpp
 @@ -182,6 +182,8 @@ INLINE void DYNACALL _vmem_writet(u32 addr,T data)
@@ -266,25 +189,6 @@ index fb0ac69..f283558 100644
  		*((T*)&(((u8*)ptr)[addr]))=data;
  	}
  	else
-@@ -449,8 +451,10 @@ bool BM_LockedWrite(u8* address) {
- 
- u8 *_vmem_elan_ram;
- 
-+extern "C" void sw2_trace(const char *m);
- bool _vmem_reserve(void)
- {
-+	sw2_trace("fc: _vmem_reserve");
- 	_vmem_elan_ram = NULL;
- 	// (said again below if this load gets the 4 GB layout: the last one's does not count)
- 	vmem_4gb_space = false;
-@@ -492,6 +496,7 @@ bool _vmem_reserve(void)
- 		aica_ram.size = ARAM_SIZE;
- 		aica_ram.data = (u8*)malloc_pages(ARAM_SIZE + PAGE_SIZE);
- 
-+		sw2_trace("fc: vmem buffers allocated");
- 		if (mem_b.data)
- 			memset(mem_b.data + RAM_SIZE, 0, PAGE_SIZE);
- 		if (vram.data)
 diff --git a/core/hw/mem/_vmem.h b/core/hw/mem/_vmem.h
 index 2d3f629..d34b90f 100644
 --- a/core/hw/mem/_vmem.h
@@ -307,7 +211,7 @@ index 2d3f629..d34b90f 100644
  static inline void vmem_jit_write_begin(void) {}
  static inline void vmem_jit_write_end(void) {}
 diff --git a/core/hw/pvr/Renderer_if.cpp b/core/hw/pvr/Renderer_if.cpp
-index 1cd1fda..74cfe7b 100644
+index 1cd1fda..0ab8c4e 100644
 --- a/core/hw/pvr/Renderer_if.cpp
 +++ b/core/hw/pvr/Renderer_if.cpp
 @@ -105,8 +105,20 @@ bool fb_dirty;
@@ -363,47 +267,7 @@ index 1cd1fda..74cfe7b 100644
     if (renderer_changed || (renderer == NULL && !renderer_failed))
     {
  	  renderer_changed = false;
-@@ -260,6 +276,10 @@ void rend_prepare_renderer()
-    }
- }
- 
-+#include <chrono>
-+unsigned long long sw2_process_ns, sw2_draw_ns, sw2_texupd_ns;
-+unsigned sw2_texupd_n;
-+unsigned long long sw2_texupd_px;
- bool rend_frame(TA_context* ctx, bool draw_osd)
- {
-    rend_prepare_renderer();
-@@ -283,7 +303,14 @@ bool rend_frame(TA_context* ctx, bool draw_osd)
-     * that draws, from the registers the frame is drawn with. */
-    palette_update();
- 
-+#ifdef __SWITCH2__
-+   auto sw2_p0 = std::chrono::steady_clock::now();
-+#endif
-    bool proc = renderer->Process(ctx);
-+#ifdef __SWITCH2__
-+   auto sw2_p1 = std::chrono::steady_clock::now();
-+   sw2_process_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(sw2_p1 - sw2_p0).count();
-+#endif
- #if !defined(TARGET_NO_THREADS)
-    /* Process() has read everything the frame takes from the game's memory:
-     * the display lists, the textures, the framebuffer. The emulation thread
-@@ -297,7 +324,13 @@ bool rend_frame(TA_context* ctx, bool draw_osd)
-       emu_baton.AckWork();
- #endif
- 
-+#ifdef __SWITCH2__
-+   auto sw2_r0 = std::chrono::steady_clock::now();
-+#endif
-    bool do_swp = proc && renderer->Render();
-+#ifdef __SWITCH2__
-+   sw2_draw_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - sw2_r0).count();
-+#endif
-    /* a picture kept across a context is for the first render to the screen
-     * after it, and that has now been made */
-    if (!ctx->rend.isRTT)
-@@ -317,6 +350,7 @@ bool rend_frame(TA_context* ctx, bool draw_osd)
+@@ -317,6 +333,7 @@ bool rend_frame(TA_context* ctx, bool draw_osd)
   * it is the same code doing the same thing to the same data. */
  bool rend_single_frame(void)
  {
@@ -411,17 +275,14 @@ index 1cd1fda..74cfe7b 100644
  	while (true)
  	{
  		if (_pvrrc == NULL)
-@@ -449,7 +483,19 @@ void rend_start_render(void)
+@@ -449,7 +466,16 @@ void rend_start_render(void)
                  * when a thread of its own draws it, and the game's are
                  * put back after. */
                 HostFloatModeBack();
 +#ifdef __SWITCH2__
 +               {
 +                  extern void sw2_present_early(void);
-+                  extern void sw2_render_note(bool rtt, int phase);
-+                  sw2_render_note(is_rtt, 0);
 +                  bool drawn = rend_single_frame();
-+                  sw2_render_note(is_rtt, 1);
 +                  if (drawn && !is_rtt)
 +                     sw2_present_early();
 +               }
@@ -431,7 +292,7 @@ index 1cd1fda..74cfe7b 100644
                 RestoreHostRoundingMode();
              }
              pend_rend = true;
-@@ -475,6 +521,9 @@ void rend_end_render(void)
+@@ -475,6 +501,9 @@ void rend_end_render(void)
     if (pend_rend && !settings.rend.ThreadedRendering && renderer != NULL)
     {
        // (the SH4's thread, as in rend_start_render())
@@ -442,16 +303,15 @@ index 1cd1fda..74cfe7b 100644
        renderer->Present();
        RestoreHostRoundingMode();
 diff --git a/core/hw/pvr/pvr_mem.cpp b/core/hw/pvr/pvr_mem.cpp
-index 442b1fc..39b4884 100644
+index 442b1fc..dad67aa 100644
 --- a/core/hw/pvr/pvr_mem.cpp
 +++ b/core/hw/pvr/pvr_mem.cpp
-@@ -1,3 +1,5 @@
-+#include <chrono>
+@@ -1,3 +1,4 @@
 +#include <algorithm>
  /*
  	PowerVR interface to plugins
  	Handles YUV conversion (slow and ugly -- but hey it works ...)
-@@ -11,6 +13,31 @@
+@@ -11,6 +12,31 @@
  
  #include "hw/holly/sb.h"
  #include "hw/holly/holly_intc.h"
@@ -483,7 +343,7 @@ index 442b1fc..39b4884 100644
  
  
  //YUV converter code :)
-@@ -131,7 +158,9 @@ static INLINE void YUV_Block384(u8* in, u8* out, u32 x_size)
+@@ -131,7 +157,9 @@ static INLINE void YUV_Block384(u8* in, u8* out, u32 x_size)
  static NOINLINE void YUV_ConvertMacroBlockWrapped(u8* datap, u32 dest, u32 x_size)
  {
  	u8 block[16 * 32];
@@ -494,7 +354,7 @@ index 442b1fc..39b4884 100644
  	YUV_Block384(datap, block, 16);
  	for (u32 y = 0; y < 16; y++)
  	{
-@@ -141,6 +170,7 @@ static NOINLINE void YUV_ConvertMacroBlockWrapped(u8* datap, u32 dest, u32 x_siz
+@@ -141,6 +169,7 @@ static NOINLINE void YUV_ConvertMacroBlockWrapped(u8* datap, u32 dest, u32 x_siz
  	}
  }
  
@@ -502,7 +362,7 @@ index 442b1fc..39b4884 100644
  static INLINE void YUV_ConvertMacroBlock(u8* datap)
  {
  	//do shit
-@@ -150,6 +180,10 @@ static INLINE void YUV_ConvertMacroBlock(u8* datap)
+@@ -150,6 +179,10 @@ static INLINE void YUV_ConvertMacroBlock(u8* datap)
  	 * byte of it is 15 lines and 31 bytes from the first. */
  	const u32 dest   = YUV_dest & VRAM_MASK;
  	const u32 x_size = YUV_x_size;
@@ -513,7 +373,7 @@ index 442b1fc..39b4884 100644
  	if ((u64)x_size * (15 * 2) + 32 + dest <= VRAM_SIZE)
  		YUV_Block384((u8*)datap,vram.data + dest,x_size);
  	else
-@@ -171,10 +205,36 @@ static INLINE void YUV_ConvertMacroBlock(u8* datap)
+@@ -171,7 +204,27 @@ static INLINE void YUV_ConvertMacroBlock(u8* datap)
  
  	// TA_YUV_TEX_CNT stays at the count it reached: it starts again when more data comes
  	if (YUV_blockcount==TA_YUV_TEX_CNT)
@@ -540,22 +400,8 @@ index 442b1fc..39b4884 100644
 +	}
  }
  
-+unsigned long long sw2_yuv_ns;
-+static void YUV_data_inner(u32* data , u32 count);
  void YUV_data(u32* data , u32 count)
-+{
-+	YUV_data_inner(data, count);
-+}
-+static void YUV_data_inner(u32* data , u32 count)
- {
- 	if (YUV_blockcount==0)
- 	{
-@@ -231,10 +291,12 @@ void YUV_data(u32* data , u32 count)
- //vram 32-64b
- 
- //read
-+extern unsigned sw2_fbw[3];
- template<typename T>
+@@ -235,6 +288,7 @@ template<typename T>
  T DYNACALL pvr_read_area1(u32 addr)
  {
  	// aligned to its size: the last bytes of video memory are not a way out of it
@@ -563,14 +409,9 @@ index 442b1fc..39b4884 100644
  	return *(T *)&vram[pvr_map32(addr) & ~(sizeof(T) - 1)];
  }
  template u8 DYNACALL pvr_read_area1<u8>(u32 addr);
-@@ -252,14 +314,46 @@ void DYNACALL pvr_write_area1(u32 addr, T data)
- 	}
- 	u32 vaddr = addr & VRAM_MASK;
+@@ -254,12 +308,39 @@ void DYNACALL pvr_write_area1(u32 addr, T data)
  	if (vaddr >= fb_watch_addr_start && vaddr < fb_watch_addr_end)
-+	{
  		fb_dirty = true;
-+		sw2_fbw[0]++;
-+	}
  
 +	vram_soft_write(pvr_map32(addr) & ~(sizeof(T) - 1));
  	*(T *)&vram[pvr_map32(addr) & ~(sizeof(T) - 1)] = data;
@@ -585,7 +426,6 @@ index 442b1fc..39b4884 100644
 + * the 64-bit view or by store queue - a movie decoder's frames - was never
 + * seen to, and the screen stood still. A 64-bit offset is taken back to
 + * the 32-bit address the framebuffer's range is in. */
-+unsigned sw2_fbw[3];	// framebuffer writes seen, by the 32-bit view, the 64-bit view, store queues
 +static inline u32 pvr_unmap32(u32 o64)
 +{
 +	const u32 static_bits = VRAM_MASK - (VRAM_BANK_BIT * 2 - 1) + 3;
@@ -601,7 +441,6 @@ index 442b1fc..39b4884 100644
 +		if (a >= fb_watch_addr_start && a < fb_watch_addr_end)
 +		{
 +			fb_dirty = true;
-+			sw2_fbw[path]++;
 +			return;
 +		}
 +	}
@@ -610,7 +449,7 @@ index 442b1fc..39b4884 100644
  void TAWrite(u32 address, u32* data, u32 count)
  {
     if ((address & 0x800000) == 0)
-@@ -282,6 +376,8 @@ extern "C" void TAWriteSQ_to_vram(u32 address, u8* sq)
+@@ -282,6 +363,8 @@ extern "C" void TAWriteSQ_to_vram(u32 address, u8* sq)
     if (path64b)
     {
        // 64b path
@@ -619,22 +458,7 @@ index 442b1fc..39b4884 100644
        memcpy(&vram[address_w & VRAM_MASK], sq, 32);
     }
     else
-@@ -293,7 +389,14 @@ extern "C" void TAWriteSQ_to_vram(u32 address, u8* sq)
- }
- 
- #if HOST_CPU!=CPU_ARM
-+#include <chrono>
-+unsigned long long sw2_ta_ns, sw2_disc_ns;
-+extern "C" void DYNACALL TAWriteSQ_inner(u32 address,u8* sqb);
- extern "C" void DYNACALL TAWriteSQ(u32 address,u8* sqb)
-+{
-+	TAWriteSQ_inner(address, sqb);
-+}
-+extern "C" void DYNACALL TAWriteSQ_inner(u32 address,u8* sqb)
- {
-    u32 address_w = address & 0x01FFFFE0;
-    u8* sq = &sqb[address & 0x20];
-@@ -327,6 +430,26 @@ u32 vri(u32 addr)
+@@ -327,6 +410,26 @@ u32 vri(u32 addr)
  	return *(u32*)&vram.data[pvr_map32(addr) & ~3u];
  }
  
@@ -661,7 +485,7 @@ index 442b1fc..39b4884 100644
  template<typename T, bool upper>
  T DYNACALL pvr_read_area4(u32 addr)
  {
-@@ -334,7 +457,10 @@ T DYNACALL pvr_read_area4(u32 addr)
+@@ -334,7 +437,10 @@ T DYNACALL pvr_read_area4(u32 addr)
  	if (access32)
  		return pvr_read_area1<T>(addr);
  	else
@@ -672,7 +496,7 @@ index 442b1fc..39b4884 100644
  }
  template u8 DYNACALL pvr_read_area4<u8, false>(u32 addr);
  template u16 DYNACALL pvr_read_area4<u16, false>(u32 addr);
-@@ -350,7 +476,11 @@ void DYNACALL pvr_write_area4(u32 addr, T data)
+@@ -350,7 +456,11 @@ void DYNACALL pvr_write_area4(u32 addr, T data)
  	if (access32)
  		pvr_write_area1(addr, data);
  	else
@@ -696,104 +520,8 @@ index fb93d39..396257d 100644
 +template<typename T> void DYNACALL pvr_write_area1_64(u32 addr, T data);
  template<typename T, bool upper> T DYNACALL pvr_read_area4(u32 addr);
  template<typename T, bool upper> void DYNACALL pvr_write_area4(u32 addr, T data);
-diff --git a/core/hw/pvr/ta_vtx.cpp b/core/hw/pvr/ta_vtx.cpp
-index 4df2990..5169dcd 100644
---- a/core/hw/pvr/ta_vtx.cpp
-+++ b/core/hw/pvr/ta_vtx.cpp
-@@ -111,6 +111,7 @@ static inline u8 float_to_satu8(float val)
- static ModTriangle* lmr;
- 
- static PolyParam* CurrentPP;
-+static PolyParam *sw2_cur_pp(void) { return CurrentPP; }
- static List<PolyParam>* CurrentPPlist;
- /* ...and its strips the fast vertex loop knows to be whole and drawable */
- static ta_strip_ok_t* CurrentStripOk;
-@@ -146,6 +147,67 @@ static TaListFP* VertexDataFP;
- // (by list type as a parameter has it, three bits: 5 to 7 are no list, and can be asked for all the same)
- static bool ListIsFinished[8];
- 
-+/* The texture coordinates the polygons with YUV textures (movies) are
-+ * drawn with, and those textures' size, filter and clamp, for the trace:
-+ * sw2_uv_report() */
-+static float sw2_umin = 1e9f, sw2_umax = -1e9f, sw2_vmin = 1e9f, sw2_vmax = -1e9f;
-+static u32 sw2_uv_tsp, sw2_uv_tcw, sw2_uv_n;
-+static PolyParam *sw2_cur_pp(void);
-+static inline void sw2_uv_note(float u, float v)
-+{
-+	PolyParam *pp = sw2_cur_pp();
-+	if (pp == NULL || pp->tcw.PixelFmt != 3)
-+		return;
-+	if (u < sw2_umin) sw2_umin = u;
-+	if (u > sw2_umax) sw2_umax = u;
-+	if (v < sw2_vmin) sw2_vmin = v;
-+	if (v > sw2_vmax) sw2_vmax = v;
-+	sw2_uv_tsp = pp->tsp.full;
-+	sw2_uv_tcw = pp->tcw.full;
-+	sw2_uv_n++;
-+}
-+extern "C" void sw2_trace(const char *);
-+extern u32 YUV_x_size, YUV_y_size;
-+void sw2_uv_report(int frame)
-+{
-+	if (sw2_uv_n != 0)
-+	{
-+		TSP tsp; tsp.full = sw2_uv_tsp;
-+		TCW tcw; tcw.full = sw2_uv_tcw;
-+		char m[260];
-+		snprintf(m, sizeof(m), "fc: yuvtex f%d verts=%u u=[%.5f,%.5f] v=[%.5f,%.5f] size=%ux%u v_max_row=%.2f u_max_col=%.2f filter=%u clampUV=%u%u flipUV=%u%u scan=%u stride=%u tcw=%08x tsp=%08x",
-+				frame, sw2_uv_n, sw2_umin, sw2_umax, sw2_vmin, sw2_vmax, 8u << tsp.TexU, 8u << tsp.TexV, sw2_vmax * (8u << tsp.TexV), sw2_umax * (8u << tsp.TexU),
-+				(unsigned)tsp.FilterMode, (unsigned)tsp.ClampU, (unsigned)tsp.ClampV, (unsigned)tsp.FlipU, (unsigned)tsp.FlipV, (unsigned)tcw.ScanOrder, (unsigned)tcw.StrideSel, sw2_uv_tcw, sw2_uv_tsp);
-+		sw2_trace(m);
-+		{
-+			/* what is in the texture around the movie's bottom edge: how many of
-+			 * the first 320 pixels of a row are 0 (YUV 0,0,0 = green) */
-+			u32 texw = 8u << tsp.TexU;
-+			u32 strd = tcw.StrideSel ? ((TEXT_CONTROL & 0x1f) * 32u) : texw;
-+			u32 base = (tcw.TexAddr << 3) & VRAM_MASK;
-+			static const int rows[] = { 0, 1, 334, 335, 336, 337, 338, 340 };
-+			char r[200]; int n = snprintf(r, sizeof(r), "fc: yuvrows f%d conv=%ux%u stride=%u zeros320:", frame, (unsigned)YUV_x_size, (unsigned)YUV_y_size, strd);
-+			for (unsigned i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
-+			{
-+				u32 z = 0;
-+				const u16 *px = (const u16 *)&vram.data[(base + rows[i] * strd * 2) & VRAM_MASK];
-+				for (int x = 0; x < 320; x++)
-+					z += (px[x] == 0);
-+				n += snprintf(r + n, sizeof(r) - n, " r%d=%u", rows[i], z);
-+			}
-+			{
-+				const u16 *a = (const u16 *)&vram.data[(base + 335 * strd * 2) & VRAM_MASK];
-+				const u16 *b = (const u16 *)&vram.data[(base + 336 * strd * 2) & VRAM_MASK];
-+				u32 eq = 0;
-+				for (int x = 0; x < 320; x++)
-+					eq += (a[x] == b[x]);
-+				snprintf(r + n, sizeof(r) - n, " r335==r336:%u", eq);
-+			}
-+			sw2_trace(r);
-+		}
-+	}
-+	sw2_umin = sw2_vmin = 1e9f; sw2_umax = sw2_vmax = -1e9f; sw2_uv_n = 0;
-+}
- static INLINE f32 f16(u16 v)
- {
- 	u32 z=v<<16;
-@@ -1185,11 +1247,13 @@ private:
- 		//uv 16/32
- 	#define vert_uv_32(u_name,v_name) \
- 		cv->u = (vtx->u_name);\
--		cv->v = (vtx->v_name);
-+		cv->v = (vtx->v_name);\
-+		sw2_uv_note(cv->u, cv->v);
- 
- 	#define vert_uv_16(u_name,v_name) \
- 		cv->u = f16(vtx->u_name);\
--		cv->v = f16(vtx->v_name);
-+		cv->v = f16(vtx->v_name);\
-+		sw2_uv_note(cv->u, cv->v);
- 
-    #define vert_uv1_32(u_name,v_name) \
- 		cv->u1 = (vtx->u_name);\
 diff --git a/core/hw/sh4/dyna/blockmanager.cpp b/core/hw/sh4/dyna/blockmanager.cpp
-index 1cff772..333892f 100644
+index 1cff772..2ce874b 100644
 --- a/core/hw/sh4/dyna/blockmanager.cpp
 +++ b/core/hw/sh4/dyna/blockmanager.cpp
 @@ -12,6 +12,15 @@
@@ -812,19 +540,16 @@ index 1cff772..333892f 100644
  
  
  #if defined(__unix__) && defined(DYNA_OPROF)
-@@ -36,6 +45,11 @@ static bool unprotected_pages[RAM_SIZE_MAX/PAGE_SIZE];
+@@ -36,6 +45,8 @@ static bool unprotected_pages[RAM_SIZE_MAX/PAGE_SIZE];
   * has been compiled from, and those it was compiled from once and that
   * nothing has written to since. */
  static bool locked_pages[RAM_SIZE_MAX/PAGE_SIZE];
 +const bool *sw2_smc_locked = locked_pages;
-+int sw2_smc_track;
-+static unsigned sw2_smc_flips, sw2_smc_logged;
-+unsigned sw2_smc_misses;
-+extern "C" void sw2_trace(const char *m);
++int sw2_smc_track = 1;	// code pages in main memory are watched in software: no write faults here
  /* The read-only blocks whose code is in each page, through their links
   * (RuntimeBlockInfo::page_link): discarded when the page is written */
  static BlockPageLink *blocks_per_page[RAM_SIZE_MAX/PAGE_SIZE];
-@@ -325,6 +339,7 @@ void bm_AddBlock(RuntimeBlockInfo* blk)
+@@ -325,6 +336,7 @@ void bm_AddBlock(RuntimeBlockInfo* blk)
  
  void bm_DiscardBlock(RuntimeBlockInfo* block)
  {
@@ -832,7 +557,7 @@ index 1cff772..333892f 100644
  	// Remove from block map
  	auto it = blkmap.find((void*)block->code);
  	verify(it != blkmap.end());
-@@ -458,6 +473,7 @@ static void bm_UnlockPage(u32 addr)
+@@ -458,6 +470,7 @@ static void bm_UnlockPage(u32 addr)
  
  void bm_ResetCache(bool nothing_since)
  {
@@ -840,7 +565,7 @@ index 1cff772..333892f 100644
  	bm_ForgetVaddrs();
  	ngen_ResetBlocks();
  	sh4_wait_sites_reset();
-@@ -756,6 +772,7 @@ void RuntimeBlockInfo::RemRef(const RuntimeBlockInfoPtr& other)
+@@ -756,6 +769,7 @@ void RuntimeBlockInfo::RemRef(const RuntimeBlockInfoPtr& other)
  
  void RuntimeBlockInfo::Discard()
  {
@@ -848,22 +573,11 @@ index 1cff772..333892f 100644
  	// Update references
  	for (RuntimeBlockInfoPtr& ref : pre_refs)
  	{
-@@ -787,11 +804,23 @@ void RuntimeBlockInfo::Discard()
- 	page_links = 0;
- }
+@@ -789,9 +803,12 @@ void RuntimeBlockInfo::Discard()
  
-+extern "C" int sw2_flag_nocheck;
-+extern int sw2_frame;
  void RuntimeBlockInfo::SetProtectedFlags()
  {
 -#ifndef TARGET_NO_EXCEPTIONS
-+	if (sw2_flag_nocheck && sw2_frame > 1100 && IsOnRam(addr))
-+	{
-+		/* test only: no protection and no self-check */
-+		this->read_only = true;
-+		protected_blocks++;
-+		return;
-+	}
 +#if !defined(TARGET_NO_EXCEPTIONS) && !defined(__SWITCH2__)
  	// Don't write protect rom and BIOS/IP.BIN (Grandia II)
  	if (!IsOnRam(addr) || (addr & 0x1FFF0000) == 0x0c000000)
@@ -873,7 +587,7 @@ index 1cff772..333892f 100644
  #endif
  	{
  		this->read_only = false;
-@@ -843,6 +872,54 @@ void bm_RamWriteAccess(u32 addr)
+@@ -843,6 +860,28 @@ void bm_RamWriteAccess(u32 addr)
  		bm_DiscardBlock(blocks_per_page[addr / PAGE_SIZE]->block);
  }
  
@@ -888,17 +602,6 @@ index 1cff772..333892f 100644
 +		const u32 page = (a & RAM_MASK) / PAGE_SIZE;
 +		if (!locked_pages[page])
 +			continue;
-+		if (sw2_smc_logged < 60)
-+		{
-+			unsigned n = 0;
-+			for (BlockPageLink *l = blocks_per_page[page]; l != NULL; l = l->next)
-+				n++;
-+			char m[120];
-+			snprintf(m, sizeof(m), "fc: smc-flip ram+%06x blocks=%u frame=%d", (unsigned)(page * PAGE_SIZE), n, sw2_frame);
-+			sw2_trace(m);
-+			sw2_smc_logged++;
-+		}
-+		sw2_smc_flips++;
 +		bm_RamWriteAccess((u32)(page * PAGE_SIZE));
 +	}
 +}
@@ -909,27 +612,12 @@ index 1cff772..333892f 100644
 +		return;
 +	sw2_smc_hit_off((u32)off, size);
 +}
-+void sw2_smc_report(int frame)
-+{
-+	if (!sw2_smc_track)
-+		return;
-+	unsigned locked = 0, unprot = 0;
-+	for (u32 i = 0; i < RAM_SIZE / PAGE_SIZE; i++)
-+	{
-+		locked += locked_pages[i];
-+		unprot += unprotected_pages[i];
-+	}
-+	char m[200];
-+	snprintf(m, sizeof(m), "fc: smc f%d locked_pages=%u unprotected_pages=%u flips=%u misses=%u prot_blocks=%u unprot_blocks=%u",
-+			frame, locked, unprot, sw2_smc_flips, sw2_smc_misses, (unsigned)protected_blocks, (unsigned)unprotected_blocks);
-+	sw2_trace(m);
-+}
 +
  /* A save state's main memory, @from, is put in place of the machine's.
   *
   * What has been compiled stays, where the code it was compiled from is
 diff --git a/core/hw/sh4/dyna/blockmanager.h b/core/hw/sh4/dyna/blockmanager.h
-index 8b5b0a4..c8ebc54 100644
+index 8b5b0a4..7b9d729 100644
 --- a/core/hw/sh4/dyna/blockmanager.h
 +++ b/core/hw/sh4/dyna/blockmanager.h
 @@ -166,3 +166,17 @@ void bm_Term();
@@ -938,7 +626,7 @@ index 8b5b0a4..c8ebc54 100644
  void bm_RamWriteAccess(u32 addr);
 +
 +/* Switch 2: no write fault tells the block manager that code was written
-+ * over, so every write to main memory asks (retroarch-smcverify.on, see
++ * over, so every write to main memory asks (see
 + * blockmanager.cpp). @off is an offset in main memory, or an address with
 + * main memory's mirrors folded by RAM_MASK; @p points into it. */
 +extern const bool *sw2_smc_locked;	// by page: code was compiled from it, and nothing has written to it since
@@ -951,46 +639,10 @@ index 8b5b0a4..c8ebc54 100644
 +		sw2_smc_hit_off(off, size);
 +}
 diff --git a/core/hw/sh4/dyna/driver.cpp b/core/hw/sh4/dyna/driver.cpp
-index b48263b..5a27ce4 100644
+index b48263b..53e8fdc 100644
 --- a/core/hw/sh4/dyna/driver.cpp
 +++ b/core/hw/sh4/dyna/driver.cpp
-@@ -229,6 +229,8 @@ bool RuntimeBlockInfo::Setup(u32 rpc,fpscr_t rfpu_cfg)
- 	return true;
- }
- 
-+extern int sw2_flag_smcverify;
-+extern "C" void sw2_trace(const char *m);
- DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
- {
- 	u32 pc=next_pc;
-@@ -258,7 +260,7 @@ DynarecCodeEntryPtr rdv_CompilePC(u32 blockcheck_failures)
- 	}
- 		bool do_opts = !rbi->temp_block;
- 		rbi->staging_runs=do_opts?100:-100;
--		bool block_check = rbi->read_only ? false : IsOnRam(rbi->addr);
-+		bool block_check = (rbi->read_only && !sw2_flag_smcverify) ? false : IsOnRam(rbi->addr);
- 		ngen_Compile(rbi, block_check, (pc & 0xFFFFFF) == 0x08300 || (pc & 0xFFFFFF) == 0x10000, false, do_opts);
- 		verify(rbi->code!=0);
- 
-@@ -351,6 +353,17 @@ DynarecCodeEntryPtr DYNACALL rdv_BlockCheckFail(u32 addr)
- 		RuntimeBlockInfoPtr block = bm_GetBlock(addr);
- 		if (block)
- 		{
-+			if (block->read_only && sw2_flag_smcverify)
-+			{
-+				/* its page is locked, and no write was seen: one went by the hooks */
-+				extern unsigned sw2_smc_misses;
-+				if (sw2_smc_misses++ < 40)
-+				{
-+					char m[120];
-+					snprintf(m, sizeof(m), "fc: smc-miss pc=%08x ram+%06x", addr, (unsigned)(addr & RAM_MASK));
-+					sw2_trace(m);
-+				}
-+			}
- 			blockcheck_failures = block->blockcheck_failures + 1;
- 			if (blockcheck_failures > 5)
- 			{
-@@ -408,7 +421,22 @@ bool rdv_MmuSamePlace(const RuntimeBlockInfo *block, u32 target, u32 *addr)
+@@ -408,7 +408,22 @@ bool rdv_MmuSamePlace(const RuntimeBlockInfo *block, u32 target, u32 *addr)
  	return true;
  }
  
@@ -1013,7 +665,7 @@ index b48263b..5a27ce4 100644
  {
  	// code is the RX addr to return after, however bm_GetBlock returns RW
  	RuntimeBlockInfoPtr rbi=bm_GetBlock2((void*)code);
-@@ -567,6 +595,16 @@ bool recSh4_HaveCodeCache(void)
+@@ -567,6 +582,16 @@ bool recSh4_HaveCodeCache(void)
  }
  #endif
  
@@ -1030,58 +682,6 @@ index b48263b..5a27ce4 100644
  static void recSh4_Init(void)
  {
  	INFO_LOG(DYNAREC, "recSh4 Init");
-diff --git a/core/hw/sh4/interpr/sh4_interpreter.cpp b/core/hw/sh4/interpr/sh4_interpreter.cpp
-index c3746ae..2f63832 100644
---- a/core/hw/sh4/interpr/sh4_interpreter.cpp
-+++ b/core/hw/sh4/interpr/sh4_interpreter.cpp
-@@ -17,6 +17,39 @@
- 
- #define CPU_RATIO      (8)
- 
-+#include <stdio.h>
-+extern "C" void sw2_trace(const char *m);
-+extern int sw2_frame;
-+extern unsigned sw2_slice;
-+static void sw2_insn_trace(u32 pc, u32 op)
-+{
-+	static int n;
-+	if (n < 6000)
-+	{
-+		char m[96];
-+		n++;
-+		snprintf(m, sizeof(m), "fc: i %08x op %04x sp %08x r0 %08x r1 %08x", (unsigned)pc, (unsigned)op, (unsigned)r[15], (unsigned)r[0], (unsigned)r[1]);
-+		sw2_trace(m);
-+	}
-+}
-+unsigned sw2_slice;
-+static void sw2_pc_trace(u32 pc)
-+{
-+	static unsigned slices;
-+	static int n;
-+	if (sw2_frame < 777)
-+		return;
-+	slices++;
-+	sw2_slice = slices;
-+	if (slices >= 11600 && n < 600)
-+	{
-+		char m[128];
-+		n++;
-+		snprintf(m, sizeof(m), "fc: pc %08x sp %08x pr %08x sr %08x f%d", (unsigned)pc, (unsigned)r[15], (unsigned)pr, (unsigned)sr.status, sw2_frame);
-+		sw2_trace(m);
-+	}
-+}
-+
- sh4_icache icache;
- sh4_ocache ocache;
- 
-@@ -57,6 +90,7 @@ void Sh4_int_Run()
- #endif
-          do
-          {
-+			u32 pcx__ = next_pc;
- 			u32 op = ReadNexOp();
- 
-             ExecuteOpcode(op);
 diff --git a/core/hw/sh4/interpr/sh4_opcodes.cpp b/core/hw/sh4/interpr/sh4_opcodes.cpp
 index 7008ce9..d7a3ee5 100644
 --- a/core/hw/sh4/interpr/sh4_opcodes.cpp
@@ -1115,30 +715,6 @@ index 75906e0..d019179 100644
  bool recSh4_HaveCodeCache(void);
  #endif
  u32* GetRegPtr(u32 reg);
-diff --git a/core/hw/sh4/sh4_interrupts.cpp b/core/hw/sh4/sh4_interrupts.cpp
-index 7e9f195..8664957 100644
---- a/core/hw/sh4/sh4_interrupts.cpp
-+++ b/core/hw/sh4/sh4_interrupts.cpp
-@@ -9,6 +9,7 @@
- 	is very fast !
- */
- 
-+#include <stdio.h>
- #include "types.h"
- #include "sh4_interrupts.h"
- #include "sh4_core.h"
-@@ -142,8 +143,11 @@ void ResetInterruptMask(InterruptID intr)
- }
- 
- 
-+extern "C" void sw2_trace(const char *m);
-+extern int sw2_frame;
- bool Do_Interrupt(u32 intEvn)
- {
-+	if (sw2_frame >= 765) { static int n__; if (n__++ < 600) { char m__[64]; snprintf(m__, sizeof(m__), "fc: Do_Interrupt %x f%d", (unsigned)intEvn, sw2_frame); sw2_trace(m__); } }
- 	CCN_INTEVT = intEvn;
- 
- 	ssr = sh4_sr_GetFull();
 diff --git a/core/hw/sh4/sh4_mem.cpp b/core/hw/sh4/sh4_mem.cpp
 index cf38836..15b6916 100644
 --- a/core/hw/sh4/sh4_mem.cpp
@@ -1205,89 +781,6 @@ index cf38836..15b6916 100644
  		memcpy(dst_ptr, src, 32);
  	}
  	else
-diff --git a/core/hw/sh4/sh4_sched.cpp b/core/hw/sh4/sh4_sched.cpp
-index 6aef268..fc9a253 100644
---- a/core/hw/sh4/sh4_sched.cpp
-+++ b/core/hw/sh4/sh4_sched.cpp
-@@ -307,6 +307,29 @@ static int sh4_sched_elapsed(int id)
-    return rv;
- }
- 
-+#include <chrono>
-+unsigned long long sw2_sched_ns;
-+static unsigned long long sw2_sched_id_ns[64];
-+static unsigned sw2_sched_id_n[64];
-+extern "C" void sw2_trace(const char *);
-+/* A window's time in the scheduler's callbacks; every tenth window, each callback's share,
-+ * named by its offset from sh4_sched_register (look it up in the .elf with nm). */
-+void sw2_sched_window(int frame)
-+{
-+	if (frame % 300 == 0)
-+	{
-+		for (size_t i = 0; i < sch_list.size() && i < 64; i++)
-+		{
-+			if (!sw2_sched_id_n[i])
-+				continue;
-+			char m[160];
-+			snprintf(m, sizeof(m), "fc: sched f%d id=%d cb_off=%lx calls=%u ms/frame=%.2f", frame, (int)i,
-+					(long)((intptr_t)sch_list[i].cb - (intptr_t)&sh4_sched_register), sw2_sched_id_n[i] / 30, sw2_sched_id_ns[i] / 30e6);
-+			sw2_trace(m);
-+		}
-+	}
-+	for (int i = 0; i < 64; i++) { sw2_sched_id_ns[i] = 0; sw2_sched_id_n[i] = 0; }
-+}
- static void handle_cb(int id)
- {
- 	int remain=(int)((u32)sch_list[id].end-(u32)sch_list[id].start);
-diff --git a/core/imgread/common.cpp b/core/imgread/common.cpp
-index a2c0a0a..95009ea 100644
---- a/core/imgread/common.cpp
-+++ b/core/imgread/common.cpp
-@@ -1,5 +1,7 @@
-+#include <chrono>
- #include "common.h"
- #include "archive/archive.h"
-+extern "C" void sw2_trace(const char *m);
- 
- Disc* chd_parse(const char* file);
- Disc* gdi_parse(const char* file);
-@@ -301,9 +303,11 @@ void GetDriveSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
-       // no disc: blank sectors, not what the buffer held before
-       memset(buff, 0, (size_t)SectorCount * secsz);
-       return;
--   }
-+   }{ static int c__; if (c__++ < 300) { char m__[96]; snprintf(m__, sizeof(m__), "fc: disc ReadSectors start=%u cnt=%u sz=%u", (unsigned)StartSector, (unsigned)SectorCount, (unsigned)secsz); sw2_trace(m__); } }
-+
- 
--   disc->ReadSectors(StartSector,SectorCount,buff,secsz);
-+   { extern unsigned long long sw2_disc_ns; auto d0__ = std::chrono::steady_clock::now(); disc->ReadSectors(StartSector,SectorCount,buff,secsz); sw2_disc_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - d0__).count(); }
-+   { static int c6__; if (c6__++ < 300) sw2_trace("fc: disc ReadSectors returned"); }
- }
- void GetDriveToc(u32* to,DiskArea area)
- {
-diff --git a/core/imgread/common.h b/core/imgread/common.h
-index c24d0f6..cfe3d8e 100644
---- a/core/imgread/common.h
-+++ b/core/imgread/common.h
-@@ -3,6 +3,8 @@
- #include <vector>
- 
- #include "deps/coreio/coreio.h"
-+#include <stdio.h>
-+extern "C" void sw2_trace(const char *m);
- 
- extern u32 NullDriveDiscType;
- struct TocTrackInfo
-@@ -398,7 +400,9 @@ struct RawTrackFile : TrackFile
- 
- 		/* A file shorter than its track says gives part of a sector, or
- 		 * none of it: the rest is blank, not what the buffer held before. */
-+		{ static int c7__; if (c7__++ < 300) { char m__[96]; snprintf(m__, sizeof(m__), "fc: raw Read FAD=%u off=%u fmt=%u", (unsigned)FAD, (unsigned)(offset + FAD * fmt), (unsigned)fmt); sw2_trace(m__); } }
- 		const size_t got = core_fread_at(file, (u32)(offset + FAD * fmt), dst, fmt);
-+		{ static int c8__; if (c8__++ < 300) sw2_trace("fc: raw Read done"); }
- 		if (got < fmt)
- 			memset(dst + got, 0, fmt - got);
- 	}
 diff --git a/core/libretro-common/features/features_cpu.c b/core/libretro-common/features/features_cpu.c
 index 868b674..183a6c7 100644
 --- a/core/libretro-common/features/features_cpu.c
@@ -1346,7 +839,7 @@ index 3d981e9..7556ca3 100644
  {
  
 diff --git a/core/libretro/libretro.cpp b/core/libretro/libretro.cpp
-index 4687729..a32c1fc 100644
+index 4687729..ff6e1d3 100644
 --- a/core/libretro/libretro.cpp
 +++ b/core/libretro/libretro.cpp
 @@ -1,6 +1,7 @@
@@ -1357,170 +850,36 @@ index 4687729..a32c1fc 100644
  #include "rend/hdr/hdr_libretro.h"
  #include "rend/hdr/hdr_output.h"
  #endif
-@@ -137,6 +138,7 @@ char slash = '/';
- 
- #include "libretro_core_option_defines.h"
- #include "libretro_core_options.h"
-+extern "C" void sw2_trace(const char *m);
- 
- u32 fskip;
- extern int screen_width;
-@@ -1651,8 +1653,138 @@ static void rend_made_again(void)
+@@ -1651,6 +1652,25 @@ static void rend_made_again(void)
  /* the size of the picture handed over this frame, as video_cb is told it */
  static void frame_size(unsigned *w, unsigned *h);
  
-+int sw2_frame;
-+#include <chrono>
-+extern unsigned long long sw2_render_ns;
-+unsigned long long sw2_arm_ns, sw2_aica_ns, sw2_dsp_ns;
-+extern unsigned long long sw2_ta_ns, sw2_disc_ns, sw2_div_count[4], sw2_sched_ns, sw2_yuv_ns;
-+extern "C" unsigned long long sw2_vt_wait_us, sw2_vt_pub_us, sw2_vd_info_us, sw2_vd_mid_us, sw2_vd_drv_us, sw2_vd_tail_us, sw2_vt_hold_us, sw2_vt_take_us;
-+void sw2_sched_window(int frame);
-+extern unsigned sw2_fbw[3];
-+extern unsigned long long sw2_process_ns, sw2_draw_ns, sw2_texupd_ns, sw2_texupd_px;
-+extern unsigned sw2_texupd_n;
-+extern "C" unsigned sw2_ctx_site_n[12];
-+extern "C" unsigned long long sw2_ctx_site_us[12];
-+extern "C" unsigned long long sw2_ctx_wait_us, sw2_ctx_bind_us, sw2_ctx_rel_us, sw2_vtp_hold_us, sw2_swap_us;
-+extern "C" unsigned sw2_vtp_n, sw2_swap_n;
-+static unsigned long long sw2_rr_ns, sw2_out_ns;
-+static unsigned long long sw2_dc_ns, sw2_vcb_ns, sw2_dc_max, sw2_vcb_max; static int sw2_dupes, sw2_slow; static int sw2_hist_n; static unsigned short sw2_hist_dc[30]; static char sw2_hist_d[31];
-+static unsigned sw2_early_n;
 +#ifdef __SWITCH2__
 +/* The screen's picture is in the frontend's framebuffer as soon as it is
 + * drawn (the GL renderers draw straight into it): it is handed over then,
 + * from inside the frame's emulation, so that the frontend presents it while
 + * the rest of the frame is emulated instead of after. Once a run; a later
 + * picture in the same run is shown by the next run's hand-over. */
-+extern "C" void sw2_evt_add(int code);
-+extern "C" void sw2_evt_dump(void);
 +static bool sw2_presented_early;
 +static bool sw2_shown_once;
-+static unsigned sw2_dupes_skipped;
-+extern "C" int sw2_flag_presentdupes;
-+extern "C" int sw2_flag_noearly;
 +static void frame_size(unsigned *fw, unsigned *fh);
-+/* The order of a frame's renders, for a few frames of the movie: which,
-+ * and when after retro_run() began */
-+static std::chrono::steady_clock::time_point sw2_rr_start;
-+void sw2_render_note(bool rtt, int phase)
-+{
-+   sw2_evt_add(phase ? 10 : 9);
-+   extern int sw2_frame;
-+   if (sw2_frame >= 0)
-+      return;
-+   if (sw2_frame < 2000 || sw2_frame > 2008)
-+      return;
-+   char m[120];
-+   snprintf(m, sizeof(m), "fc: rendnote f%d %s %s at %.2fms early_done=%d", sw2_frame, rtt ? "rtt" : "screen", phase ? "end" : "start",
-+         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sw2_rr_start).count(), (int)sw2_presented_early);
-+   sw2_trace(m);
-+}
 +void sw2_present_early(void)
 +{
-+   if (sw2_presented_early || sw2_flag_noearly || !video_cb)
++   if (sw2_presented_early || !video_cb)
 +      return;
 +   unsigned fw, fh;
 +   frame_size(&fw, &fh);
-+   auto t0 = std::chrono::steady_clock::now();
-+   sw2_evt_add(1);
 +   video_cb(RETRO_HW_FRAME_BUFFER_VALID, fw, fh, 0);
-+   sw2_evt_add(2);
-+   sw2_vcb_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
 +   sw2_presented_early = true;
-+   sw2_early_n++;
 +}
 +#endif
-+static std::chrono::steady_clock::time_point sw2_perf_t0 = std::chrono::steady_clock::now();
-+static void sw2_perf_report(int frame)
-+{
-+   if (frame >= 121 && frame <= 140)
-+   {
-+      char d[200]; snprintf(d, sizeof(d), "fc: rf f%d pc=%08x r0=%x r2=%x r3=%x r5=%x r6=%x t=%d", frame, (unsigned)Sh4cntx.pc, (unsigned)Sh4cntx.r[0], (unsigned)Sh4cntx.r[2], (unsigned)Sh4cntx.r[3], (unsigned)Sh4cntx.r[5], (unsigned)Sh4cntx.r[6], (int)Sh4cntx.sr.T);
-+      sw2_trace(d);
-+   }
-+   if (frame % 30 != 0)
-+      return;
-+   auto now = std::chrono::steady_clock::now();
-+   double wall = std::chrono::duration<double, std::milli>(now - sw2_perf_t0).count();
-+   char m[160];
-+   snprintf(m, sizeof(m), "fc: perf f%d wall=%.1fms/frame dc_run=%.1f render_cpu=%.1f video_cb=%.1f pc=%08x sr=%08x ipend=%x", frame, wall / 30.0,
-+         sw2_dc_ns / 30e6, sw2_render_ns / 30e6, sw2_vcb_ns / 30e6, (unsigned)Sh4cntx.pc, (unsigned)Sh4cntx.sr.status, (unsigned)Sh4cntx.interrupt_pend);
-+   sw2_trace(m);
-+   if (frame == 120)
-+   {
-+      char d[400]; int n;
-+      u32 w = (u32)(s32)(s16)ReadMem16(0x8c0c1244);
-+      u32 base = ReadMem32(Sh4cntx.r[14]);
-+      n = snprintf(d, sizeof(d), "fc: lit w=%x r14ptr=%x bytes@base+w:", w, base);
-+      for (int i = 0; i < 24; i++) n += snprintf(d + n, sizeof(d) - n, " %02x", (unsigned)ReadMem8(base + w + i));
-+      sw2_trace(d);
-+   }
-+   if (frame == 120 || frame == 600)
-+   {
-+      char d[400]; int n = snprintf(d, sizeof(d), "fc: code@8c0c1110:");
-+      for (u32 a = 0x8c0c1110; a < 0x8c0c1160; a += 2) n += snprintf(d + n, sizeof(d) - n, " %04x", (unsigned)ReadMem16(a));
-+      sw2_trace(d);
-+      n = snprintf(d, sizeof(d), "fc: regs:");
-+      for (int i = 0; i < 16; i++) n += snprintf(d + n, sizeof(d) - n, " r%d=%x", i, (unsigned)Sh4cntx.r[i]);
-+      sw2_trace(d);
-+      snprintf(d, sizeof(d), "fc: sh4 sr_t=%x cycles=%d", (unsigned)Sh4cntx.sr.T, (int)Sh4cntx.cycle_counter);
-+      sw2_trace(d);
-+   }
-+   { char e[300]; snprintf(e, sizeof(e), "fc: stat f%d dc_max=%.1f vcb_max=%.1f dupes=%d/30 slow(>14ms)=%d div=%llu/%llu/%llu/%llu ta=%.1f disc=%.1f arm=%.1f aica=%.1f(dsp=%.1f)", frame, sw2_dc_max / 1e6, sw2_vcb_max / 1e6, sw2_dupes, sw2_slow, sw2_div_count[0], sw2_div_count[1], sw2_div_count[2], sw2_div_count[3], sw2_ta_ns / 30e6, sw2_disc_ns / 30e6, sw2_arm_ns / 30e6, sw2_aica_ns / 30e6, sw2_dsp_ns / 30e6); sw2_trace(e); { char g[420]; snprintf(g, sizeof(g), "fc: split f%d early=%u/30 skipped=%u/30 fbw=%u/%u/%u retro_run=%.2f outside=%.2f dc_run=%.2f sched_cb=%.2f yuv=%.2f arm7=%.2f aica=%.2f(dsp=%.2f) disc=%.2f | video_cb=%.2f [build_info=%.2f stats/osd=%.2f driver=%.2f (wait=%.2f publish=%.2f pace_hold=%.2f ctx_take=%.2f) after=%.2f]", frame,
-+         sw2_early_n, sw2_dupes_skipped, sw2_fbw[0], sw2_fbw[1], sw2_fbw[2], sw2_rr_ns / 30e6, sw2_out_ns / 30e6, sw2_dc_ns / 30e6, sw2_sched_ns / 30e6, sw2_yuv_ns / 30e6, sw2_arm_ns / 30e6, sw2_aica_ns / 30e6, sw2_dsp_ns / 30e6, sw2_disc_ns / 30e6,
-+         sw2_vcb_ns / 30e6, sw2_vd_info_us / 30e3, sw2_vd_mid_us / 30e3, sw2_vd_drv_us / 30e3, sw2_vt_wait_us / 30e3, sw2_vt_pub_us / 30e3, sw2_vt_hold_us / 30e3, sw2_vt_take_us / 30e3, sw2_vd_tail_us / 30e3); sw2_trace(g); }
-+   { char h[400]; snprintf(h, sizeof(h), "fc: ctxsite f%d glsm=%u/%.2f fbq=%u/%.2f coretake=%u/%.2f nextframe=%u/%.2f free=%u/%.2f rend=%u/%.2f rtt=%u/%.2f rttframe=%u/%.2f rttput_off=%u rtttake=%u/%.2f rttaccess=%u/%.2f | take: wait=%.2f bind=%.2f; release=%.2f | vthread: passes=%u hold/pass=%.2f swaps=%u swap/each=%.2f", frame,
-+         sw2_ctx_site_n[0], sw2_ctx_site_us[0] / 30e3, sw2_ctx_site_n[1], sw2_ctx_site_us[1] / 30e3, sw2_ctx_site_n[2], sw2_ctx_site_us[2] / 30e3,
-+         sw2_ctx_site_n[3], sw2_ctx_site_us[3] / 30e3, sw2_ctx_site_n[4], sw2_ctx_site_us[4] / 30e3, sw2_ctx_site_n[5], sw2_ctx_site_us[5] / 30e3, sw2_ctx_site_n[6], sw2_ctx_site_us[6] / 30e3, sw2_ctx_site_n[7], sw2_ctx_site_us[7] / 30e3, sw2_ctx_site_n[11], sw2_ctx_site_n[8], sw2_ctx_site_us[8] / 30e3, sw2_ctx_site_n[9], sw2_ctx_site_us[9] / 30e3, sw2_ctx_wait_us / 30e3, sw2_ctx_bind_us / 30e3, sw2_ctx_rel_us / 30e3, sw2_vtp_n, sw2_vtp_n ? sw2_vtp_hold_us / 1e3 / sw2_vtp_n : 0.0, sw2_swap_n, sw2_swap_n ? sw2_swap_us / 1e3 / sw2_swap_n : 0.0); sw2_trace(h); sw2_ctx_wait_us = sw2_ctx_bind_us = sw2_ctx_rel_us = 0; sw2_vtp_hold_us = 0; sw2_vtp_n = 0; sw2_swap_us = 0; sw2_swap_n = 0;
-+     for (int i = 0; i < 12; i++) { sw2_ctx_site_n[i] = 0; sw2_ctx_site_us[i] = 0; } }
-+   { char r2[200]; snprintf(r2, sizeof(r2), "fc: rendsplit f%d process=%.2f draw=%.2f texupdates=%u/30 texupd=%.2fms texels=%llu", frame,
-+         sw2_process_ns / 30e6, sw2_draw_ns / 30e6, sw2_texupd_n, sw2_texupd_ns / 30e6, sw2_texupd_px / 30); sw2_trace(r2);
-+     sw2_process_ns = sw2_draw_ns = sw2_texupd_ns = sw2_texupd_px = 0; sw2_texupd_n = 0; }
-+   { extern void sw2_uv_report(int frame); sw2_uv_report(frame); }
-+   { extern void sw2_blkprof_report(int frame); sw2_blkprof_report(frame); }
-+   { extern void sw2_jitpub_report(int frame); sw2_jitpub_report(frame); }
-+   { extern void sw2_smc_report(int frame); sw2_smc_report(frame); }
-+   sw2_sched_window(frame);
-+   sw2_sched_ns = sw2_yuv_ns = 0; sw2_rr_ns = sw2_out_ns = 0; sw2_early_n = 0; sw2_dupes_skipped = 0; sw2_fbw[0] = sw2_fbw[1] = sw2_fbw[2] = 0; sw2_vt_wait_us = sw2_vt_pub_us = sw2_vd_info_us = sw2_vd_mid_us = sw2_vd_drv_us = sw2_vd_tail_us = sw2_vt_hold_us = sw2_vt_take_us = 0;
-+   sw2_arm_ns = sw2_aica_ns = sw2_dsp_ns = sw2_ta_ns = sw2_disc_ns = 0; if (frame % 120 == 0) { char h[400]; int n = snprintf(h, sizeof(h), "fc: hist f%d ", frame); for (int i = 0; i < 30; i++) n += snprintf(h + n, sizeof(h) - n, "%c", sw2_hist_d[(sw2_hist_n + i) % 30]); n += snprintf(h + n, sizeof(h) - n, " dc(0.1ms):"); for (int i = 0; i < 30; i++) n += snprintf(h + n, sizeof(h) - n, " %u", (unsigned)sw2_hist_dc[(sw2_hist_n + i) % 30]); sw2_trace(h); } }
-+   sw2_dc_max = sw2_vcb_max = 0; sw2_dupes = sw2_slow = 0;
-+   sw2_dc_ns = sw2_vcb_ns = sw2_render_ns = 0;
-+   sw2_perf_t0 = now;
-+}
-+static std::chrono::steady_clock::time_point sw2_rr_end;
-+static bool sw2_rr_have_end;
  void retro_run (void)
  {
-+auto sw2_rr0 = std::chrono::steady_clock::now();
-+sw2_rr_start = sw2_rr0;
-+sw2_evt_add(7);
-+if (sw2_rr_have_end) sw2_out_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(sw2_rr0 - sw2_rr_end).count();
-+static int rr__ = 0; rr__++; { extern int sw2_frame; sw2_frame = rr__; }
-+#define RRT(msg) do { static int rl__; if (rr__ > 1000000000 && rl__++ < 4000) { char m__[64]; snprintf(m__, sizeof(m__), "fc: f%d " msg, rr__); sw2_trace(m__); } } while (0)
-+{ static int c__; if (c__++ < 30) sw2_trace("fc: retro_run"); }
-+RRT("start");
-+{ if (rr__ % 25000000 == 0) { u64 used__ = 0, tot__ = 0; svcGetInfo(&used__, 6, 0xFFFF8001u, 0); svcGetInfo(&tot__, 7, 0xFFFF8001u, 0); char m__[128]; snprintf(m__, sizeof(m__), "fc: mem f%d used=%lluK total=%lluK", rr__, (unsigned long long)(used__ >> 10), (unsigned long long)(tot__ >> 10)); sw2_trace(m__); } }
     bool updated     = false;
- 
-    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
-@@ -1835,7 +1967,11 @@ void retro_run (void)
- 		   dc_reset(false);
- 		   retro_atomic_store_release_int(&reset_requested, 0);
- 	   }
-+	   RRT("pre dc_run");
-+	   auto pf0__ = std::chrono::steady_clock::now();
- 	   dc_run();
-+	   { unsigned long long d__ = (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - pf0__).count(); sw2_dc_ns += d__; sw2_hist_dc[sw2_hist_n % 30] = (unsigned short)(d__ / 100000ull); if (d__ > sw2_dc_max) sw2_dc_max = d__; if (d__ > 14000000ull) sw2_slow++; }
-+	   RRT("post dc_run");
- 	   /* (a frame in which the game read no input polls all the same) */
- 	   input_poll_once();
- 
-@@ -1869,13 +2005,44 @@ void retro_run (void)
+@@ -1869,7 +1889,26 @@ void retro_run (void)
     {
        unsigned fw, fh;
        frame_size(&fw, &fh);
-+      auto pv0__ = std::chrono::steady_clock::now();
 +      #ifdef __SWITCH2__
 +      /* always present the core's framebuffer: a NULL frame made the frontend show an older picture -
 +       * unless this run's picture was handed over already, as soon as it was drawn (sw2_present_early) */
@@ -1530,97 +889,21 @@ index 4687729..a32c1fc 100644
 +       * vblank, waited for. (Handing over no frame is not the NULL frame,
 +       * which had the frontend show an older picture.) The first picture
 +       * there is to show, and every new one, are handed over. */
-+      if (!sw2_presented_early && (!is_dupe || !sw2_shown_once || sw2_flag_presentdupes))
++      if (!sw2_presented_early && (!is_dupe || !sw2_shown_once))
 +      {
 +         video_cb(RETRO_HW_FRAME_BUFFER_VALID, fw, fh, 0);
 +         sw2_shown_once = true;
 +      }
-+      else if (!sw2_presented_early)
-+         sw2_dupes_skipped++;
 +      if (sw2_presented_early)
 +         sw2_shown_once = true;
 +      sw2_presented_early = false;
 +#else
        video_cb(is_dupe ? 0 : RETRO_HW_FRAME_BUFFER_VALID, fw, fh, 0);
 +#endif
-+      { unsigned long long v__ = (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - pv0__).count(); sw2_vcb_ns += v__; if (v__ > sw2_vcb_max) sw2_vcb_max = v__; if (is_dupe) sw2_dupes++; sw2_hist_d[sw2_hist_n % 30] = is_dupe ? 'd' : 'N'; sw2_hist_n++; }
     }
  #endif
-+   RRT("post video_cb");
     is_dupe = true;
- 
-    /* Keep timing.fps in step with the actual emulated refresh rate. */
-    update_av_info_if_changed();
-+   sw2_evt_add(8);
-+   { extern int sw2_frame; if (sw2_frame == 2010) sw2_evt_dump(); }
-+   sw2_rr_end = std::chrono::steady_clock::now();
-+   sw2_rr_have_end = true;
-+   sw2_rr_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(sw2_rr_end - sw2_rr0).count();
-+   sw2_perf_report(rr__);
-+   RRT("end");
- }
- 
- void retro_reset (void)
-@@ -1899,11 +2066,13 @@ void retro_reset (void)
- #if defined(HAVE_OPENGL) || defined(HAVE_OPENGLES)
- static void context_reset(void)
- {
-+   sw2_trace("fc: ctx reset begin");
-    context_resets++;
-    take_pending_size();
-    gl_ctx_resetting = false;
-    glsm_ctl(GLSM_CTL_STATE_CONTEXT_RESET, NULL);
-    glsm_ctl(GLSM_CTL_STATE_SETUP, NULL);
-+   sw2_trace("fc: ctx reset setup done");
- #ifdef HAVE_GL4
-    /* The renderer is set up now, with the context, and not in the first
-     * frame after it: GPU-side TA processing's kernels and buffers are
-@@ -1918,6 +2087,7 @@ static void context_reset(void)
- 
- static void context_destroy(void)
- {
-+   sw2_trace("fc: ctx destroy begin");
-    /* The context is still there, and with it what the game rendered to
-     * textures and video memory has not got yet: it gets it now. */
-    rtt_watch_flush();
-@@ -1937,6 +2107,7 @@ static void context_destroy(void)
-    gl_ctx_resetting = true;
-    renderer_changed = true;
-    glsm_ctl(GLSM_CTL_STATE_CONTEXT_DESTROY, NULL);
-+   sw2_trace("fc: ctx destroy done");
- }
- #endif
- 
-@@ -2959,8 +3130,10 @@ static void naomi_bios_detect_multiregion(void)
-       NOTICE_LOG(NAOMI, "Multi-region BIOS: Korea set on the DIP switches");
- }
- 
-+extern "C" void sw2_trace(const char *m);
- bool retro_load_game(const struct retro_game_info *game)
- {
-+   sw2_trace("fc: retro_load_game");
-    const char *dir = NULL;
-    const char *vmu_dir = NULL;
- #ifdef _WIN32
-@@ -3260,7 +3433,9 @@ bool retro_load_game(const struct retro_game_info *game)
-       snprintf(nvmem_file2, sizeof(nvmem_file2), "%s%s.nvmem2", save_dir, g_base_name);
-    }
- 
-+   sw2_trace("fc: pre-dc_prepare_system");
-    dc_prepare_system();
-+   sw2_trace("fc: pre-dc_init");
-    // (again, for frames of the machine's size, now that it is known)
-    ta_set_walk_check(ta_header_check);
- 
-@@ -3271,6 +3446,7 @@ bool retro_load_game(const struct retro_game_info *game)
-    	ERROR_LOG(BOOT, "Initialization failed");
-    	return false;
-    }
-+   sw2_trace("fc: dc_init ok");
-    naomi_bios_detect_multiregion();
-    midiffb_init();
-    int rotation = rotate_screen ? 3 : 0;
-@@ -3644,6 +3820,11 @@ static void set_geometry(struct retro_game_geometry *geometry, int *width, int *
+@@ -3644,6 +3683,11 @@ static void set_geometry(struct retro_game_geometry *geometry, int *width, int *
     if(naomi_cart_GetRotation() == 3)
        geometry->aspect_ratio = 1 / geometry->aspect_ratio;
     maximum               = *width > *height ? *width : *height;
@@ -1632,24 +915,8 @@ index 4687729..a32c1fc 100644
     geometry->base_width  = *width;
     geometry->base_height = *height;
     geometry->max_width   = maximum;
-@@ -3676,6 +3857,7 @@ static void apply_new_size(void)
-    struct retro_game_geometry geometry;
- 
-    resize_pending = false;
-+   sw2_trace("fc: apply_new_size");
-    /* The size stays the old one while the frontend destroys the context:
-     * the picture is kept from it, at the size it was drawn. It is the new
-     * one from where the frontend makes the next context. */
-@@ -3697,6 +3879,7 @@ static void apply_new_size(void)
-       if (!environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &g_av_info))
-          environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &g_av_info.geometry);
-    }
-+   sw2_trace(context_resets != resets ? "fc: resize: context was remade" : "fc: resize: same context");
-    if (context_resets != resets)
-    {
-       take_pending_size();
 diff --git a/core/libretro/vmem_utils.cpp b/core/libretro/vmem_utils.cpp
-index 4a077e4..2b2e905 100644
+index 4a077e4..5234a5d 100644
 --- a/core/libretro/vmem_utils.cpp
 +++ b/core/libretro/vmem_utils.cpp
 @@ -22,6 +22,16 @@
@@ -1693,7 +960,7 @@ index 4a077e4..2b2e905 100644
  	size_t inpage = (uintptr_t)start & PAGE_MASK;
  
  #ifdef HAVE_LIBNX
-@@ -399,6 +419,182 @@ bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code
+@@ -399,6 +419,110 @@ bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code
  	return true;
  }
  
@@ -1701,43 +968,14 @@ index 4a077e4..2b2e905 100644
 +#include <switch/kernel/jit.h>
 +#include <ouncehen/protocol.h>
 +extern "C" Result ouncehenJitPublishRanges(Jit* code, const OuncehenJitRange* ranges, size_t count);
-+extern "C" void sw2_trace(const char *m);
 +static Jit sw2_jit;
 +static bool sw2_jit_ready;
 +static int sw2_jit_depth;
 +static OuncehenJitRange sw2_ranges[256];
 +static int sw2_nranges;
 +static bool sw2_all_dirty;
-+static void sw2_jit_trace_rc(const char *what, unsigned rc)
-+{
-+	char m[96];
-+	snprintf(m, sizeof(m), "fc: jit %s rc=%08x", what, rc);
-+	sw2_trace(m);
-+}
 +/* The code is staged in the writable buffer; what a write window changed
 + * is published to the executable mapping through RO when it closes. */
-+#include <time.h>
-+/* what publishing code to RO costs, for the trace: calls, bytes, time */
-+static unsigned sw2_pub_n, sw2_pub_ranges, sw2_pub_max_us;
-+static unsigned long long sw2_pub_bytes, sw2_pub_ns;
-+static inline unsigned long long sw2_pub_now_ns(void)
-+{
-+	struct timespec ts;
-+	clock_gettime(CLOCK_MONOTONIC, &ts);
-+	return (unsigned long long)ts.tv_sec * 1000000000ull + ts.tv_nsec;
-+}
-+void sw2_jitpub_report(int frame)
-+{
-+	if (sw2_pub_n != 0)
-+	{
-+		char m[200];
-+		snprintf(m, sizeof(m), "fc: jitpub f%d calls=%u ranges=%u bytes=%llu ms=%.2f avg_us=%.1f max_us=%u",
-+				frame, sw2_pub_n, sw2_pub_ranges, sw2_pub_bytes, sw2_pub_ns / 1e6, sw2_pub_ns / 1e3 / sw2_pub_n, sw2_pub_max_us);
-+		sw2_trace(m);
-+	}
-+	sw2_pub_n = sw2_pub_ranges = sw2_pub_max_us = 0;
-+	sw2_pub_bytes = sw2_pub_ns = 0;
-+}
 +static void sw2_jit_publish(void)
 +{
 +	if (!sw2_jit_ready || (sw2_nranges == 0 && !sw2_all_dirty))
@@ -1745,28 +983,9 @@ index 4a077e4..2b2e905 100644
 +	OuncehenJitRange all = { 0, (u64)sw2_jit.size };
 +	const OuncehenJitRange *r = sw2_all_dirty ? &all : sw2_ranges;
 +	const size_t n = sw2_all_dirty ? 1 : (size_t)sw2_nranges;
-+	const unsigned long long t0 = sw2_pub_now_ns();
 +	Result rc = ouncehenJitPublishRanges(&sw2_jit, r, n);
-+	{
-+		const unsigned long long dt = sw2_pub_now_ns() - t0;
-+		sw2_pub_n++;
-+		sw2_pub_ranges += (unsigned)n;
-+		for (size_t i = 0; i < n; i++)
-+			sw2_pub_bytes += r[i].size;
-+		sw2_pub_ns += dt;
-+		if (dt / 1000 > sw2_pub_max_us)
-+			sw2_pub_max_us = (unsigned)(dt / 1000);
-+	}
-+	static int cnt;
-+	if (cnt++ < 5)
-+	{
-+		char m[96];
-+		snprintf(m, sizeof(m), "publish n=%u first_off=%llx first_size=%llx", (unsigned)n, (unsigned long long)r[0].offset, (unsigned long long)r[0].size);
-+		sw2_jit_trace_rc(m, (unsigned)rc);
-+	}
 +	if (R_FAILED(rc))
 +	{
-+		sw2_jit_trace_rc("publish FAILED", (unsigned)rc);
 +		exit(1);
 +	}
 +	sw2_nranges = 0;
@@ -1800,49 +1019,26 @@ index 4a077e4..2b2e905 100644
 +	if (sw2_jit_ready && --sw2_jit_depth == 0)
 +		sw2_jit_publish();
 +}
-+int sw2_flag_nocheck, sw2_flag_nofast, sw2_flag_prof, sw2_flag_noearly, sw2_flag_presentdupes, sw2_flag_blkprof, sw2_flag_smcverify;
 +#define SW2_JIT_TOTAL (17829888u + 4u * 1024 * 1024 + 64u * 1024)
 +static unsigned sw2_jit_tail;	// bytes taken from the end
-+static int sw2_file_exists(const char *n) { FILE *f = fopen(n, "rb"); if (f) fclose(f); return f != NULL; }
 +/* Whether code memory can be had here at all; made once, kept for the game. */
 +bool sw2_jit_probe(unsigned size)
 +{
-+	sw2_flag_nocheck = sw2_file_exists("/retroarch-nocheck.on");
-+	sw2_flag_nofast = sw2_file_exists("/retroarch-nofast.on");
-+	sw2_flag_prof = sw2_file_exists("/retroarch-prof.on");
-+	sw2_flag_blkprof = sw2_file_exists("/retroarch-blkprof.on");
-+	/* /retroarch-smc.on: blocks in pages that are watched have no self-check
-+	 * (it wins over /retroarch-smcverify.on, which keeps the checks and says
-+	 * when one fails for a page that was not seen written to) */
-+	const int sw2_smc_on = sw2_file_exists("/retroarch-smc.on");
-+	sw2_flag_smcverify = !sw2_smc_on && sw2_file_exists("/retroarch-smcverify.on");
-+	{ extern int sw2_smc_track; sw2_smc_track = sw2_smc_on || sw2_flag_smcverify; if (sw2_smc_on) sw2_trace("fc: smc on (no self-check for watched pages)"); else if (sw2_flag_smcverify) sw2_trace("fc: smcverify on"); }
-+	sw2_flag_noearly = sw2_file_exists("/retroarch-noearly.on");
-+	sw2_flag_presentdupes = sw2_file_exists("/retroarch-presentdupes.on");
-+	{ char m[96]; snprintf(m, sizeof(m), "fc: flags nocheck=%d nofast=%d noearly=%d presentdupes=%d", sw2_flag_nocheck, sw2_flag_nofast, sw2_flag_noearly, sw2_flag_presentdupes); sw2_trace(m); }
 +	static int state;	// 0 untried, 1 ready, -1 not available
 +	if (state != 0)
 +		return state > 0;
 +	(void)size;
 +	/* the SH4's code from the start, the ARM7's and the DSP's carved from the end: see sw2_jit_alloc_tail() */
 +	const unsigned size_aligned = SW2_JIT_TOTAL;
-+	sw2_trace("fc: jit create");
 +	Result rc = jitCreate(&sw2_jit, size_aligned);
-+	sw2_jit_trace_rc("jitCreate", (unsigned)rc);
 +	if (R_FAILED(rc))
 +	{
 +		state = -1;
 +		return false;
 +	}
-+	{
-+		char m[160];
-+		snprintf(m, sizeof(m), "fc: jit type=%d rw=%p rx=%p size=%u exec=%d", (int)sw2_jit.type, jitGetRwAddr(&sw2_jit), jitGetRxAddr(&sw2_jit), size_aligned, (int)sw2_jit.is_executable);
-+		sw2_trace(m);
-+	}
 +	if (sw2_jit.is_executable)
 +	{
 +		rc = jitTransitionToWritable(&sw2_jit);
-+		sw2_jit_trace_rc("to_writable(initial)", (unsigned)rc);
 +	}
 +	sw2_jit_ready = true;
 +	sw2_jit_depth = 0;
@@ -1861,7 +1057,6 @@ index 4a077e4..2b2e905 100644
 +	sw2_jit_tail += size;
 +	char *rw = (char *)jitGetRwAddr(&sw2_jit) + (SW2_JIT_TOTAL - sw2_jit_tail);
 +	*rx_offset = (uintptr_t)jitGetRxAddr(&sw2_jit) - (uintptr_t)jitGetRwAddr(&sw2_jit);
-+	char m[96]; snprintf(m, sizeof(m), "fc: jit tail alloc %u at %p", size, (void *)rw); sw2_trace(m);
 +	return rw;
 +}
 +bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code_area_rw, uintptr_t *rx_offset) {
@@ -1876,7 +1071,7 @@ index 4a077e4..2b2e905 100644
  // Use two addr spaces: need to remap something twice, therefore use allocate_shared_filemem()
  bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code_area_rw, uintptr_t *rx_offset) {
  #ifndef HAVE_LIBNX
-@@ -446,6 +642,8 @@ bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code
+@@ -446,6 +570,8 @@ bool vmem_platform_prepare_jit_block(void *code_area, unsigned size, void **code
  	return (ptr_rw != MAP_FAILED);
  }
  
@@ -1885,7 +1080,7 @@ index 4a077e4..2b2e905 100644
  #ifdef HOST_APPLE_JIT
  #include <dlfcn.h>
  #include <mach-o/getsect.h>
-@@ -550,6 +748,14 @@ static void Arm64_CacheFlush(void* start, void* end) {
+@@ -550,6 +676,14 @@ static void Arm64_CacheFlush(void* start, void* end) {
  
  
  void vmem_platform_flush_cache(void *icache_start, void *icache_end, void *dcache_start, void *dcache_end) {
@@ -1901,7 +1096,7 @@ index 4a077e4..2b2e905 100644
  
  	// Dont risk it and flush and invalidate icache&dcache for both ranges just in case.
 diff --git a/core/nullDC.cpp b/core/nullDC.cpp
-index 58c4f1f..9d10649 100644
+index 58c4f1f..5346db9 100644
 --- a/core/nullDC.cpp
 +++ b/core/nullDC.cpp
 @@ -176,7 +176,7 @@ void dc_apply_game_settings(void)
@@ -1913,284 +1108,22 @@ index 58c4f1f..9d10649 100644
  	// (no memory for code: a frontend without the JIT entitlement)
  	if (settings.dynarec.Enable && !recSh4_HaveCodeCache())
  		settings.dynarec.Enable = 0;
-@@ -560,8 +560,10 @@ static void dc_init_unwind(int stage)
-    }
- }
- 
-+extern "C" void sw2_trace(const char *m);
- int dc_init()
- {
-+   sw2_trace("fc: dc_init");
-    extern void common_libretro_setup(void);
-    extern char game_dir_no_slash[1024];
-    char new_system_dir[1024];
-@@ -577,8 +579,10 @@ int dc_init()
-       dc_init_unwind(DC_INIT_SETUP);
-       return -1;
-    }
-+   sw2_trace("fc: pre-reios_init");
-    reios_init();
- 
-+   sw2_trace("fc: pre-LoadSettings");
-    LoadSettings();
- 
- #ifdef _WIN32
-@@ -607,9 +611,12 @@ int dc_init()
-    {
-       LoadRomFiles(new_system_dir);
-    }
-+   sw2_trace("fc: pre-LoadSpecialSettingsCPU");
-    LoadSpecialSettingsCPU();
- 
-+   sw2_trace("fc: pre-sh4_cpu.Init");
-    sh4_cpu.Init();
-+   sw2_trace("fc: pre-mem_Init");
-    mem_Init();
- 
- #ifdef _WIN64
-@@ -619,6 +626,7 @@ int dc_init()
-    }
- #endif
- 
-+   sw2_trace("fc: pre-plugins_Init");
-    if (plugins_Init())
-    {
-       dc_init_unwind(DC_INIT_CPU);
-@@ -634,7 +642,9 @@ int dc_init()
-       WARN_LOG(COMMON, "No NAOMI BIOS, using reios");
-    }
- 
-+   sw2_trace("fc: pre-mem_map_default");
-    mem_map_default();
-+   sw2_trace("fc: post-mem_map_default");
- 
-    dc_reset(true);
- 
 diff --git a/core/rec-ARM64/rec_arm64.cpp b/core/rec-ARM64/rec_arm64.cpp
-index fc42a97..1386691 100644
+index fc42a97..ada765e 100644
 --- a/core/rec-ARM64/rec_arm64.cpp
 +++ b/core/rec-ARM64/rec_arm64.cpp
-@@ -32,6 +32,211 @@ using namespace vixl::aarch64;
+@@ -32,6 +32,10 @@ using namespace vixl::aarch64;
  
  #include "hw/sh4/sh4_opcode_list.h"
  #include "hw/sh4/dyna/wait_site.h"
-+extern "C" int sw2_flag_nocheck, sw2_flag_nofast, sw2_flag_prof;
-+unsigned long long sw2_div_count[4];
 +#pragma push_macro("sr")
 +#undef sr
 +static const size_t sw2_sr_status_off = offsetof(Sh4Context, sr.status);
 +#pragma pop_macro("sr")
-+#include <chrono>
-+#include <unordered_map>
-+extern int sw2_frame;
-+static std::unordered_map<u32, unsigned long long> sw2_prof;
-+static std::chrono::steady_clock::time_point sw2_prof_last;
-+#include <vector>
-+#include <algorithm>
-+
-+/* Block profile, with /retroarch-blkprof.on on the SD card: how often each
-+ * block runs (a counter at the start of its code), what it holds (the
-+ * counts below are made when it is compiled), and, every 150 frames, which
-+ * blocks, shil operations and interpreter fallbacks the time goes to, in
-+ * the trace. With the flag off nothing is added to the code. */
-+extern "C" int sw2_flag_blkprof;
-+extern "C" void sw2_trace(const char *m);
-+struct Sw2BlkStat
-+{
-+	u32 vaddr, cycles, nops, nmem, nifb, bytes;
-+	unsigned long long hits, prev;
-+	std::vector<std::pair<u16, u16> > ifb;	// SH4 opcode, how many in the block
-+	u8 ops[shop_max];
-+};
-+static std::unordered_map<u32, Sw2BlkStat *> sw2_blks;
-+static Sw2BlkStat *sw2_blk_get(RuntimeBlockInfo *b)
-+{
-+	Sw2BlkStat *&s = sw2_blks[b->vaddr];
-+	if (s == nullptr)
-+	{
-+		s = new Sw2BlkStat();
-+		s->hits = s->prev = 0;
-+	}
-+	s->vaddr = b->vaddr;
-+	s->cycles = b->guest_cycles;
-+	s->nops = s->nmem = s->nifb = s->bytes = 0;
-+	s->ifb.clear();
-+	memset(s->ops, 0, sizeof(s->ops));
-+	return s;
-+}
-+static void sw2_blk_note(Sw2BlkStat *s, const shil_opcode &op)
-+{
-+	if (s->ops[op.op] < 255)
-+		s->ops[op.op]++;
-+	s->nops++;
-+	if (op.op == shop_readm || op.op == shop_writem)
-+		s->nmem++;
-+	if (op.op == shop_ifb)
-+	{
-+		const u16 opc = (u16)op.rs3._imm;
-+		s->nifb++;
-+		for (auto &p : s->ifb)
-+			if (p.first == opc)
-+			{
-+				p.second++;
-+				return;
-+			}
-+		s->ifb.push_back(std::make_pair(opc, (u16)1));
-+	}
-+}
-+void sw2_blkprof_report(int frame)
-+{
-+	static int last = -1;
-+	if (!sw2_flag_blkprof)
-+		return;
-+	if (last < 0)
-+	{
-+		last = frame;
-+		for (auto &kv : sw2_blks)
-+			kv.second->prev = kv.second->hits;
-+		return;
-+	}
-+	if (frame - last < 150)
-+		return;
-+	const int nf = frame - last;
-+	last = frame;
-+
-+	struct Row { unsigned long long cyc, d; Sw2BlkStat *s; };
-+	std::vector<Row> rows;
-+	rows.reserve(sw2_blks.size());
-+	unsigned long long tb = 0, tc = 0, to = 0, tm = 0, ti = 0;
-+	static unsigned long long opexec[shop_max];
-+	memset(opexec, 0, sizeof(opexec));
-+	std::map<u16, unsigned long long> ifbexec;
-+	for (auto &kv : sw2_blks)
-+	{
-+		Sw2BlkStat *s = kv.second;
-+		const unsigned long long d = s->hits - s->prev;
-+		s->prev = s->hits;
-+		if (d == 0)
-+			continue;
-+		tb += d;
-+		tc += d * s->cycles;
-+		to += d * s->nops;
-+		tm += d * s->nmem;
-+		ti += d * s->nifb;
-+		Row r = { d * s->cycles, d, s };
-+		rows.push_back(r);
-+		for (int i = 0; i < (int)shop_max; i++)
-+			if (s->ops[i])
-+				opexec[i] += d * s->ops[i];
-+		for (auto &p : s->ifb)
-+			ifbexec[p.first] += d * p.second;
-+	}
-+	char b[256];
-+	const double f = nf;
-+	snprintf(b, sizeof(b), "fc: blk f%d win=%d compiled=%zu run=%zu per-frame: blocks=%.0f guestcycles=%.0f shilops=%.0f mem=%.0f ifb=%.0f",
-+			frame, nf, sw2_blks.size(), rows.size(), tb / f, tc / f, to / f, tm / f, ti / f);
-+	sw2_trace(b);
-+
-+	const size_t nt = std::min<size_t>(16, rows.size());
-+	std::sort(rows.begin(), rows.end(), [](const Row &a, const Row &c) { return a.cyc > c.cyc; });
-+	{
-+		/* the host code that the guest cycles are spread over: all blocks run,
-+		 * and the fewest (hottest first) that hold half, 90% and 99% of them */
-+		unsigned long long all = 0, sops = 0, cum = 0, at50 = 0, at90 = 0, at99 = 0;
-+		size_t n50 = 0, n90 = 0, n99 = 0;
-+		for (auto &r : rows)
-+		{
-+			all += r.s->bytes;
-+			sops += r.s->nops;
-+		}
-+		for (size_t i = 0; i < rows.size(); i++)
-+		{
-+			cum += rows[i].cyc;
-+			at99 += rows[i].s->bytes; n99 = i + 1;
-+			if (cum * 100 <= tc * 50) { at50 = at99; n50 = n99; }
-+			if (cum * 100 <= tc * 90) { at90 = at99; n90 = n99; }
-+			if (cum * 100 >= tc * 99) break;
-+		}
-+		snprintf(b, sizeof(b), "fc: blk code: run blocks=%zu %lluKB | 50%% of cycles in %zu blocks %lluKB | 90%% in %zu blocks %lluKB | 99%% in %zu blocks %lluKB | avg %.0f bytes/block, %.1f bytes/shilop",
-+				rows.size(), all / 1024, n50, at50 / 1024, n90, at90 / 1024, n99, at99 / 1024,
-+				rows.empty() ? 0.0 : (double)all / rows.size(), sops ? (double)all / sops : 0.0);
-+		sw2_trace(b);
-+	}
-+	for (size_t i = 0; i < nt; i++)
-+	{
-+		const Sw2BlkStat *s = rows[i].s;
-+		snprintf(b, sizeof(b), "fc: blk top%zu pc=%08x share=%.1f%% hits/frame=%.0f cycles=%u ops=%u mem=%u ifb=%u",
-+				i + 1, s->vaddr, tc ? 100.0 * rows[i].cyc / tc : 0.0, rows[i].d / f, s->cycles, s->nops, s->nmem, s->nifb);
-+		sw2_trace(b);
-+	}
-+
-+	std::vector<std::pair<unsigned long long, int> > ov;
-+	for (int i = 0; i < (int)shop_max; i++)
-+		if (opexec[i])
-+			ov.push_back(std::make_pair(opexec[i], i));
-+	std::sort(ov.begin(), ov.end(), [](const std::pair<unsigned long long, int> &a, const std::pair<unsigned long long, int> &c) { return a.first > c.first; });
-+	for (size_t i = 0; i < ov.size() && i < 16; i += 8)
-+	{
-+		int n = snprintf(b, sizeof(b), "fc: blk ops/frame:");
-+		for (size_t j = i; j < ov.size() && j < i + 8 && j < 16; j++)
-+			n += snprintf(b + n, sizeof(b) - n, " %s=%.0f", shil_opcode_name(ov[j].second), ov[j].first / f);
-+		sw2_trace(b);
-+	}
-+
-+	std::vector<std::pair<unsigned long long, u16> > iv;
-+	for (auto &kv : ifbexec)
-+		iv.push_back(std::make_pair(kv.second, kv.first));
-+	std::sort(iv.begin(), iv.end(), [](const std::pair<unsigned long long, u16> &a, const std::pair<unsigned long long, u16> &c) { return a.first > c.first; });
-+	for (size_t i = 0; i < iv.size() && i < 10; i += 5)
-+	{
-+		int n = snprintf(b, sizeof(b), "fc: blk ifb/frame:");
-+		for (size_t j = i; j < iv.size() && j < i + 5 && j < 10; j++)
-+		{
-+			const char *name = OpDesc[iv[j].second] != nullptr && OpDesc[iv[j].second]->diss != nullptr ? OpDesc[iv[j].second]->diss : "?";
-+			n += snprintf(b + n, sizeof(b) - n, " [%04x %s]=%.0f", iv[j].second, name, iv[j].first / f);
-+		}
-+		sw2_trace(b);
-+	}
-+}
-+extern "C" int sw2_UpdateSystemProf(uintptr_t lr)
-+{
-+	auto now = std::chrono::steady_clock::now();
-+	if (sw2_frame >= 1500 && sw2_frame < 1700)
-+	{
-+		RuntimeBlockInfoPtr blk = bm_GetBlock2((void *)lr);
-+		u32 a = blk ? blk->addr : 0;
-+		sw2_prof[a] += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now - sw2_prof_last).count();
-+	}
-+	else if (sw2_frame == 1700 && !sw2_prof.empty())
-+	{
-+		std::vector<std::pair<unsigned long long, u32>> v;
-+		unsigned long long tot = 0;
-+		for (auto &kv : sw2_prof) { v.push_back({kv.second, kv.first}); tot += kv.second; }
-+		std::sort(v.rbegin(), v.rend());
-+		extern void sw2_trace(const char *);
-+		char m[160];
-+		snprintf(m, sizeof(m), "fc: prof total=%.1fms over 200 frames, blocks=%zu", tot / 1e6, v.size());
-+		sw2_trace(m);
-+		for (size_t i = 0; i < v.size() && i < 40; i++)
-+		{
-+			snprintf(m, sizeof(m), "fc: prof %08x %.1fms %.1f%%", v[i].second, v[i].first / 1e6, 100.0 * v[i].first / tot);
-+			sw2_trace(m);
-+		}
-+		sw2_prof.clear();
-+	}
-+	int r = UpdateSystem();
-+	sw2_prof_last = std::chrono::steady_clock::now();
-+	return r;
-+}
  
  #include "hw/sh4/sh4_mmr.h"
  #include "hw/sh4/sh4_interrupts.h"
-@@ -456,6 +661,7 @@ public:
- 	{
- 		//printf("REC-ARM64 compiling %08x\n", block->addr);
- 		this->block = block;
-+		const size_t blk_start = GetBuffer()->GetCursorOffset();
- 		CheckBlock(force_checks, block);
- 
- 		// run register allocator
-@@ -496,7 +702,15 @@ public:
+@@ -496,7 +500,15 @@ public:
  			Str(w27, MemOperand(sp, 8));
  		}
  
@@ -2206,29 +1139,7 @@ index fc42a97..1386691 100644
  		if (accurate && sh4_block_writes(block))
  		{
  			// a block that can change something other than a register says so: see wait_site.h
-@@ -506,9 +720,21 @@ public:
- 			Str(w0, MemOperand(x1));
- 		}
- 
-+		Sw2BlkStat *blkstat = nullptr;
-+		if (sw2_flag_blkprof)
-+		{
-+			blkstat = sw2_blk_get(block);
-+			Mov(x1, reinterpret_cast<uintptr_t>(&blkstat->hits));
-+			Ldr(x0, MemOperand(x1));
-+			Add(x0, x0, 1);
-+			Str(x0, MemOperand(x1));
-+		}
-+
- 		for (size_t i = 0; i < block->oplist.size(); i++)
- 		{
- 			shil_opcode& op  = block->oplist[i];
-+			if (blkstat != nullptr)
-+				sw2_blk_note(blkstat, op);
- 			regalloc.OpBegin(&op, i);
- 
- 			switch (op.op)
-@@ -1240,6 +1466,112 @@ public:
+@@ -1240,6 +1252,105 @@ public:
  				Scvtf(regalloc.MapVRegister(op.rd), regalloc.MapRegister(op.rs1));
  				break;
  
@@ -2245,13 +1156,6 @@ index fc42a97..1386691 100644
 +						else
 +							Mov(dst, regalloc.MapRegister(p));
 +					};
-+					{
-+						const int k = op.op == shop_div1 ? 0 : op.op == shop_div32u ? 1 : op.op == shop_div32s ? 2 : 3;
-+						Mov(x14, reinterpret_cast<uintptr_t>(&sw2_div_count[k]));
-+						Ldr(x15, MemOperand(x14));
-+						Add(x15, x15, 1);
-+						Str(x15, MemOperand(x14));
-+					}
 +					ld(w10, op.rs1);
 +					ld(w11, op.rs2);
 +					ld(w12, op.rs3);
@@ -2341,118 +1245,7 @@ index fc42a97..1386691 100644
  			default:
  				shil_chf[op.op](&op);
  				break;
-@@ -1281,6 +1613,8 @@ public:
- 			}
- 		}
- 
-+		if (blkstat != nullptr)
-+			blkstat->bytes = (u32)(GetBuffer()->GetCursorOffset() - blk_start);
- 		block->relink_offset = (u32)GetBuffer()->GetCursorOffset();
- 		block->relink_data = 0;
- 
-@@ -1764,7 +2098,13 @@ public:
- 		// (the timers' time is the end of the slice here: see cycle_counter in sh4_if.h)
- 		Mov(w0, SH4_TIMESLICE);
- 		Str(w0, MemOperand(x28, offsetof(Sh4Context, cycle_counter)));
--		GenCallRuntime(UpdateSystem);
-+		if (sw2_flag_prof)
-+		{
-+			Mov(x0, x29);
-+			GenCallRuntime(sw2_UpdateSystemProf);
-+		}
-+		else
-+			GenCallRuntime(UpdateSystem);
- 		Mov(lr, x29);
- 		Cbnz(w0, &do_interrupts);
- 		Ldr(w0, MemOperand(x28, offsetof(Sh4Context, CpuRunning)));
-@@ -1919,6 +2259,32 @@ private:
- 			Mov(*call_regs[2], block->vaddr + op.guest_offs - (op.delay_slot ? 2 : 0));	// pc
- 
- 		u32 size = op.flags & 0x7f;
-+#ifdef __SWITCH2__
-+		Label sw2_slow, sw2_done;
-+		if (!mmu_enabled() && !sw2_flag_nofast)
-+		{
-+			// main memory, inline: the host has it at mem_b, and no fault is there to ask
-+			Lsr(w2, w0, 29);
-+			Cmp(w2, 7);
-+			B(&sw2_slow, eq);
-+			And(w2, w0, 0x1FFFFFFF);
-+			Sub(w2, w2, 0x0C000000);
-+			Cmp(w2, 0x04000000);
-+			B(&sw2_slow, hs);
-+			Mov(w3, (uint32_t)RAM_MASK);
-+			And(w2, w2, w3);
-+			Mov(x3, (uint64_t)(uintptr_t)mem_b.data);
-+			switch (size)
-+			{
-+			case 1: Ldrsb(w0, MemOperand(x3, x2)); break;
-+			case 2: Ldrsh(w0, MemOperand(x3, x2)); break;
-+			case 8: Ldr(x0, MemOperand(x3, x2)); break;
-+			default: Ldr(w0, MemOperand(x3, x2)); break;
-+			}
-+			B(&sw2_done);
-+			Bind(&sw2_slow);
-+		}
-+#endif
- 		{
- 			Label lut_miss, lut_done;
- 
-@@ -1947,6 +2313,10 @@ private:
- 			else
- 				GenReadMemorySlow(size);
- 		}
-+#ifdef __SWITCH2__
-+		if (!mmu_enabled() && !sw2_flag_nofast)
-+			Bind(&sw2_done);
-+#endif
- 
- 		if (size < 8)
- 			host_reg_to_shil_param(op.rd, w0);
-@@ -2206,6 +2576,31 @@ private:
- 			shil_param_to_host_reg(op.rs2, *call_regs[1]);
- 		else
- 			shil_param_to_host_reg(op.rs2, *call_regs64[1]);
-+#ifdef __SWITCH2__
-+		Label sw2_slow, sw2_done;
-+		if (!mmu_enabled() && !sw2_flag_nofast && !sw2_smc_track)
-+		{
-+			Lsr(w2, w0, 29);
-+			Cmp(w2, 7);
-+			B(&sw2_slow, eq);
-+			And(w2, w0, 0x1FFFFFFF);
-+			Sub(w2, w2, 0x0C000000);
-+			Cmp(w2, 0x04000000);
-+			B(&sw2_slow, hs);
-+			Mov(w3, (uint32_t)RAM_MASK);
-+			And(w2, w2, w3);
-+			Mov(x3, (uint64_t)(uintptr_t)mem_b.data);
-+			switch (size)
-+			{
-+			case 1: Strb(w1, MemOperand(x3, x2)); break;
-+			case 2: Strh(w1, MemOperand(x3, x2)); break;
-+			case 8: Str(x1, MemOperand(x3, x2)); break;
-+			default: Str(w1, MemOperand(x3, x2)); break;
-+			}
-+			B(&sw2_done);
-+			Bind(&sw2_slow);
-+		}
-+#endif
- 		Label lut_miss, lut_done;
- 
- 		if (GenMmuLookup(mmu_write_lut, size, lut_miss))
-@@ -2232,6 +2627,10 @@ private:
- 		}
- 		else
- 			GenWriteMemorySlow(size);
-+#ifdef __SWITCH2__
-+		if (!mmu_enabled() && !sw2_flag_nofast && !sw2_smc_track)
-+			Bind(&sw2_done);
-+#endif
- 	}
- 
- 	/* With the MMU on an access is a call, which asks the MMU. First,
-@@ -2307,6 +2706,8 @@ private:
+@@ -2307,6 +2418,8 @@ private:
  #endif // NO_MMU
  		bool isram = false;
  		void* ptr = _vmem_write_const(addr, isram, size > 4 ? 4 : size);
@@ -2461,50 +1254,6 @@ index fc42a97..1386691 100644
  
  		Register reg2;
  		if (size != 8)
-diff --git a/core/rend/TexCache.cpp b/core/rend/TexCache.cpp
-index 29ffe2d..11ac52c 100644
---- a/core/rend/TexCache.cpp
-+++ b/core/rend/TexCache.cpp
-@@ -1,3 +1,4 @@
-+#include <chrono>
- /* The texture cache works for the renderer: it reads the registers the
-  * frame is rendered with, not the ones the emulation has moved on to. */
- #define PVR_REGS_FOR_RENDERER
-@@ -1695,8 +1696,20 @@ bool BaseTextureCacheData::UpdatePart(u32 stride, u32 rows, bool mipmapped, bool
- 	return true;
- }
- 
-+extern unsigned long long sw2_texupd_ns, sw2_texupd_px;
-+extern unsigned sw2_texupd_n;
- void BaseTextureCacheData::Update()
- {
-+#ifdef __SWITCH2__
-+	auto sw2_t0 = std::chrono::steady_clock::now();
-+	Update_inner();
-+	sw2_texupd_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - sw2_t0).count();
-+	sw2_texupd_n++;
-+	sw2_texupd_px += (unsigned long long)w * h;
-+}
-+void BaseTextureCacheData::Update_inner()
-+{
-+#endif
- 	/* only what NeedsUpdate() just hashed is known to be the rest of it */
- 	const bool part = changed_pieces;
- 	bool watched = false;
-diff --git a/core/rend/TexCache.h b/core/rend/TexCache.h
-index 7408c2b..05c03ad 100644
---- a/core/rend/TexCache.h
-+++ b/core/rend/TexCache.h
-@@ -1140,6 +1140,9 @@ public:
- 	bool HashChanged();
- 	bool FromRender(u32 stride, u32 rows);
- 	void Update();
-+#ifdef __SWITCH2__
-+	void Update_inner();
-+#endif
- 	bool PlanDecode(texd_plan& plan, u32 stride, u32 rows, u32 out, bool mipmapped);
- 	/* The regions the changed pieces are in, up to TEXP_REGIONS; 0 if the
- 	 * texture is to be made whole */
 diff --git a/core/rend/gles/gl_texdecoder.cpp b/core/rend/gles/gl_texdecoder.cpp
 index b87143f..cbaad9e 100644
 --- a/core/rend/gles/gl_texdecoder.cpp
@@ -2665,115 +1414,6 @@ index b87143f..cbaad9e 100644
  	if (!ready)
  		return;
  	serial++;
-diff --git a/core/rend/gles/gldraw.cpp b/core/rend/gles/gldraw.cpp
-index ecb3446..6e155f2 100644
---- a/core/rend/gles/gldraw.cpp
-+++ b/core/rend/gles/gldraw.cpp
-@@ -5,6 +5,7 @@
- #include "rend/shadows.h"
- #include "rend/modvol_clip.h"
- #include <cstring>
-+extern "C" void sw2_trace(const char *m);
- 
- /*
- 
-@@ -826,6 +827,7 @@ static void DrawModVols(int first, int count, const RenderPass& previous_pass, c
- 
- void DrawStrips()
- {
-+{ static int c__; if (c__++ < 30) sw2_trace("fc: DrawStrips"); }
- 	SetupMainVBO(pvrrc.gpu);
- 	/* (a frame decoded on the GPU has its sorted passes sorted already, and
- 	 * their indices went straight to the decoder's room for them when the
-diff --git a/core/rend/gles/gles.cpp b/core/rend/gles/gles.cpp
-index edc33f1..a5cfd54 100644
---- a/core/rend/gles/gles.cpp
-+++ b/core/rend/gles/gles.cpp
-@@ -9,6 +9,7 @@
- #include "rend/grow_buf.h"
- #include "ta_decoder_gl.h"
- #include "glprogram_cache.h"
-+extern "C" void sw2_trace(const char *m);
- 
- #ifndef GL_RED
- #define GL_RED                            0x1903
-@@ -1410,8 +1411,16 @@ static void own_target_present(void)
- #endif
- }
- 
-+#include <chrono>
-+unsigned long long sw2_render_ns;
-+struct Sw2RenderTimer {
-+	std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
-+	~Sw2RenderTimer() { sw2_render_ns += (unsigned long long)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(); }
-+};
- static bool RenderFrame(void)
- {
-+Sw2RenderTimer sw2_rt__;
-+{ static int c__; if (c__++ < 30) sw2_trace("fc: RenderFrame"); }
- 	int vmu_screen_number = 0 ;
- 	bool own_target = false;
- 	int lightgun_port = 0 ;
-diff --git a/core/rend/gles/gltex.cpp b/core/rend/gles/gltex.cpp
-index 1a06db6..23ad709 100644
---- a/core/rend/gles/gltex.cpp
-+++ b/core/rend/gles/gltex.cpp
-@@ -10,6 +10,7 @@
- #include "rend/grow_buf.h"
- #include "gl_texdecoder.h"
- #include "hw/pvr/pvr_mem.h"
-+extern "C" void sw2_trace(const char *m);
- 
- #ifndef GL_UNPACK_ROW_LENGTH
- #define GL_UNPACK_ROW_LENGTH 0x0CF2
-@@ -142,6 +143,7 @@ GLPooledTexture *GLTexturePool::Make(int cls, bool late)
- {
- 	const u32 f = TexPoolBook::Format(cls);
- 	const u32 width = TexPoolBook::Width(cls), height = TexPoolBook::Height(cls);
-+	if (late) { static int c2__; if (c2__++ < 300) sw2_trace("fc: pool Make late pre"); }
- 	GLPooledTexture *t = new GLPooledTexture();
- 	t->levels = TexPoolBook::Mips(cls) ? 1 + bitscanrev(std::max(width, height)) : 1;
- 	glGenTextures(1, &t->name);
-@@ -164,6 +166,7 @@ GLPooledTexture *GLTexturePool::Make(int cls, bool late)
- 		return nullptr;
- 	}
- 	book.Made(t, cls, TexPoolBook::Bytes(cls, poolTexel[f]), late, poolNames[f]);
-+	if (late) { static int c3__; if (c3__++ < 300) sw2_trace("fc: pool Make late done"); }
- 	t->all = all;
- 	all = t;
- 	return t;
-@@ -612,6 +615,7 @@ void TextureCacheData::SetRendered(GLuint tex, GLPooledTexture *pooled)
- 
- void TextureCacheData::UploadToGPU(int width, int height, u8 *temp_tex_buffer, bool mipmapped, bool mipmapsIncluded)
- {
-+{ static int c__; if (c__++ < 40) sw2_trace("fc: UploadToGPU"); }
- 	bool bound;
- 	CancelDecode();
- 	temp_tex_buffer = upload_ring_source(temp_tex_buffer, &bound);
-@@ -625,6 +629,7 @@ void TextureCacheData::UploadToGPUFrom(int width, int height, u8 *temp_tex_buffe
- 	{
- 		/* Into the pool's texture, made before the game with every level
- 		 * it can have */
-+		{ static int c4__; if (c4__++ < 400) sw2_trace("fc: up pooled"); }
- 		glcache.BindTexture(GL_TEXTURE_2D, texID);
- 		const u32 f = (u32)tex_type;
- 		const u32 bpp = poolTexel[f];
-@@ -643,6 +648,7 @@ void TextureCacheData::UploadToGPUFrom(int width, int height, u8 *temp_tex_buffe
- 		return;
- 	}
- 	ReleasePooled();
-+	{ static int c5__; if (c5__++ < 400) sw2_trace("fc: up unpooled"); }
- 	if (texID != 0)
- 	{
- 		//upload to OpenGL !
-@@ -793,6 +799,7 @@ bool TextureCacheData::PartMemory(size_t bytes, void **memory)
- 
- void TextureCacheData::UploadPart(const TexRegion *regions, u32 count, u8 *data, const size_t *offset)
- {
-+{ static int c__; if (c__++ < 40) sw2_trace("fc: UploadPart"); }
- 	const u32 f = (u32)tex_type;
- 	GLenum format, type;
- 	u32 i;
 diff --git a/core/rend/rtt_watch.cpp b/core/rend/rtt_watch.cpp
 index d300605..2a79e1f 100644
 --- a/core/rend/rtt_watch.cpp

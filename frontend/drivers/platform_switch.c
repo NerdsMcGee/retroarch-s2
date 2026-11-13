@@ -212,98 +212,10 @@ static void get_first_valid_core(char *path_return, size_t len)
 }
 #endif
 
-/* Core breadcrumbs ("fc: ...", from flycast) cost a file open per call, so
- * they are written only when /retroarch-fctrace.on exists on the SD card. */
-void sw2_trace(const char *m)
-{
-   if (m[0] == 'f' && m[1] == 'c' && m[2] == ':')
-   {
-      static int fc_on = -1;
-      if (fc_on < 0)
-      {
-         FILE *t = fopen("/retroarch-fctrace.on", "rb");
-         fc_on = t ? 1 : 0;
-         if (t) fclose(t);
-      }
-      if (!fc_on)
-         return;
-   }
-#ifdef __SWITCH2__
-   /* fc: lines - the core's timing, several every half second - are kept
-    * in memory and written in batches: opening and closing the file on
-    * the SD card for each took a millisecond or two of the emulation's
-    * thread at a time, a regular hitch. Any other line, and a full batch,
-    * writes out what is kept first, so the order stays and nothing
-    * before a startup or shutdown breadcrumb is lost to a crash. */
-   {
-      static Mutex sw2_trace_mutex;
-      static char  sw2_trace_buf[64 * 1024];
-      static size_t sw2_trace_len;
-      size_t n   = strlen(m);
-      bool   fc  = m[0] == 'f' && m[1] == 'c' && m[2] == ':';
-      mutexLock(&sw2_trace_mutex);
-      if (fc && sw2_trace_len + n + 1 < sizeof(sw2_trace_buf) - 1024)
-      {
-         memcpy(sw2_trace_buf + sw2_trace_len, m, n);
-         sw2_trace_len += n;
-         sw2_trace_buf[sw2_trace_len++] = 10;
-         mutexUnlock(&sw2_trace_mutex);
-         return;
-      }
-      {
-         FILE *f = fopen("/retroarch-trace.txt", "ab");
-         if (f)
-         {
-            if (sw2_trace_len)
-               fwrite(sw2_trace_buf, 1, sw2_trace_len, f);
-            fputs(m, f); fputc(10, f); fclose(f);
-         }
-         sw2_trace_len = 0;
-      }
-      mutexUnlock(&sw2_trace_mutex);
-      return;
-   }
-#else
-   FILE *f = fopen("/retroarch-trace.txt", "ab");
-   if (!f) return;
-   fputs(m, f); fputc(10, f); fclose(f);
-#endif
-}
-
-#ifdef __SWITCH2__
-/* Crash breadcrumbs: registers and frame-pointer chain to the trace file. */
-void __libnx_exception_handler(ThreadExceptionDump *ctx)
-{
-   FILE *f = fopen("/retroarch-trace.txt", "ab");
-   if (f)
-   {
-      u64 fp = ctx->fp.x;
-      int n;
-      fprintf(f, "EXCEPTION desc=0x%x esr=0x%x pc=0x%llx lr=0x%llx sp=0x%llx fp=0x%llx far=0x%llx\n",
-            ctx->error_desc, ctx->esr, (unsigned long long)ctx->pc.x,
-            (unsigned long long)ctx->lr.x, (unsigned long long)ctx->sp.x,
-            (unsigned long long)ctx->fp.x, (unsigned long long)ctx->far.x);
-      fprintf(f, "EXCEPTION handler=0x%llx\n", (unsigned long long)(uintptr_t)&__libnx_exception_handler);
-      for (n = 0; n < 24; n++)
-      {
-         u64 *frame;
-         if ((fp & 15) || fp <= ctx->sp.x || fp - ctx->sp.x > 0x1000000)
-            break;
-         frame = (u64*)fp;
-         fprintf(f, "EXCEPTION frame %d lr=0x%llx\n", n, (unsigned long long)frame[1]);
-         fp = frame[0];
-      }
-      fclose(f);
-   }
-   svcExitProcess();
-}
-#endif
-
 static void frontend_switch_get_env(
       int *argc, char *argv[], void *args, void *params_data)
 {
    unsigned i;
-   sw2_trace("get_env");
 #ifndef IS_SALAMANDER
 #if defined(HAVE_LOGGER)
    logger_init();
@@ -403,11 +315,8 @@ static void frontend_switch_get_env(
 static void frontend_switch_deinit(void *data)
 {
    (void)data;
-   sw2_trace("deinit");
 
-   sw2_trace("deinit-nifm");
    nifmExit();
-   sw2_trace("deinit-clk");
    if (hosversionBefore(8, 0, 0))
    {
       pcvSetClockRate(PcvModule_CpuBus, 1020000000);
@@ -424,7 +333,6 @@ static void frontend_switch_deinit(void *data)
       clkrstExit();
    }
 
-   sw2_trace("deinit-pre-socket");
 #if defined(SWITCH) && defined(NXLINK)
    socketExit();
 #endif
@@ -432,7 +340,6 @@ static void frontend_switch_deinit(void *data)
    if (psmInitialized)
        psmExit();
 
-   sw2_trace("deinit-unlock");
    appletUnlockExit();
 }
 
@@ -670,7 +577,6 @@ error:
 
 static void frontend_switch_shutdown(bool unused)
 {
-   sw2_trace("shutdown");
    (void)unused;
 }
 
@@ -681,7 +587,6 @@ static void frontend_switch_init(void *data)
 {
    Result rc;
    bool recording_supported      = false;
-   sw2_trace("init");
 
    nifmInitialize(NifmServiceType_User);
 
@@ -706,7 +611,6 @@ static void frontend_switch_init(void *data)
 #endif /* IS_SALAMANDER */
 #endif /* NXLINK */
 
-   sw2_trace("init-pre-psm");
    rc = psmInitialize();
    if (R_SUCCEEDED(rc))
        psmInitialized = true;

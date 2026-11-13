@@ -198,6 +198,14 @@ retro_perf_tick_t cpu_features_get_perf_counter(void)
       __asm__ __volatile__ ("rdtsc" : "=a" (a), "=d" (d));
       time_ticks = (retro_perf_tick_t)a | ((retro_perf_tick_t)d << 32);
    }
+#elif defined(__SWITCH2__)
+   /* cntvct_el0 faults for the process here: the monotonic clock */
+   {
+      struct timespec tv;
+      if (clock_gettime(CLOCK_MONOTONIC, &tv) == 0)
+         time_ticks = (retro_perf_tick_t)tv.tv_sec * 1000000000 +
+            (retro_perf_tick_t)tv.tv_nsec;
+   }
 #elif defined(__GNUC__) && defined(__aarch64__)
    __asm__ __volatile__ ("mrs %0, cntvct_el0" : "=r" (time_ticks));
 #elif defined(__GNUC__) && defined(__ARM_ARCH_6__)

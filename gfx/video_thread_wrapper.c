@@ -808,74 +808,16 @@ static thread_video_t *video_thread_thr_capture;
  * of before it. Set by video_thread_frame(); settled by the next thing
  * on the core's thread that needs the context. */
 static thread_video_t *sw2_ctx_owed_thr;
-/* A timeline of the hand-over, the video thread's passes and the core's
- * takes, in microseconds, kept in a ring and written out on request
- * (sw2_evt_dump): 1/2 early hand-over, 3/4 video pass, 5/6 a take that
- * waited, 7/8 retro_run, 9/10 a render */
-#define SW2_EVT_N 512
-static struct { int code; long long us; } sw2_evt[SW2_EVT_N];
-static volatile unsigned sw2_evt_i;
-int video_thread_hw_ctx_owner(thread_video_t *thr);
-void sw2_evt_add(int code)
-{
-   unsigned i = __atomic_fetch_add(&sw2_evt_i, 1, __ATOMIC_RELAXED) % SW2_EVT_N;
-   /* (with the context's owner word: code*100 + word; -1 as 99) */
-   {
-      thread_video_t *t = video_thread_thr_capture;
-      int o = t ? video_thread_hw_ctx_owner(t) : -1;
-      code = code * 100 + (o < 0 ? 99 : (o & 63));
-   }
-   sw2_evt[i].code = code;
-   sw2_evt[i].us   = (long long)cpu_features_get_time_usec();
-}
-void sw2_evt_dump(void)
-{
-   extern void sw2_trace(const char *);
-   char line[400];
-   unsigned end = sw2_evt_i, n = 0, i;
-   long long base = 0;
-   int len = 0;
-   for (i = end > 200 ? end - 200 : 0; i < end; i++)
-   {
-      unsigned k = i % SW2_EVT_N;
-      if (!base)
-         base = sw2_evt[k].us;
-      len += snprintf(line + len, sizeof(line) - len, " %d@%lld", sw2_evt[k].code, sw2_evt[k].us - base);
-      if (++n % 16 == 0 || i + 1 == end)
-      {
-         sw2_trace(line[0] ? line : "-");
-         len = 0;
-         line[0] = 0;
-      }
-   }
-}
-/* the video thread's passes: how long each holds the context */
-static retro_time_t sw2_vtp_t0;
-unsigned long long sw2_vtp_hold_us;
-unsigned sw2_vtp_n;
-unsigned long long sw2_vt_wait_us, sw2_vt_pub_us, sw2_vt_copy_us, sw2_vt_hold_us, sw2_vt_take_us;
-/* Which caller settled the owed take, and what it waited, by site: 0 core glsm bind,
- * 1 framebuffer query, 2 core-context take, 3 next frame hand-off, 4 teardown */
-unsigned sw2_ctx_site_n[12];
-unsigned long long sw2_ctx_site_us[12];
+/* site: who settles the take (0 core glsm bind, 1 framebuffer query,
+ * 2 core-context take, 3 next frame hand-off, 4 teardown) */
 void sw2_gl_ctx_ensure_at(int site)
 {
    thread_video_t *thr = sw2_ctx_owed_thr;
-   retro_time_t t0, d;
+   (void)site;
    if (!thr)
       return;
    sw2_ctx_owed_thr = NULL;
-   t0 = cpu_features_get_time_usec();
-   sw2_evt_add(5);
    video_thread_hw_ctx_take(thr, false);
-   sw2_evt_add(6);
-   d  = cpu_features_get_time_usec() - t0;
-   sw2_vt_take_us += (unsigned long long)d;
-   if (site >= 0 && site < 12)
-   {
-      sw2_ctx_site_n[site]++;
-      sw2_ctx_site_us[site] += (unsigned long long)d;
-   }
 }
 void sw2_gl_ctx_ensure(void) { sw2_gl_ctx_ensure_at(0); }
 /* The context for work that can wait for a later frame: taken (and true)
@@ -884,11 +826,7 @@ int sw2_gl_ctx_try_at(int site)
 {
    thread_video_t *thr = sw2_ctx_owed_thr;
    if (thr && video_thread_hw_ctx_video_holds(thr))
-   {
-      if (site >= 0 && site < 12)
-         sw2_ctx_site_n[11]++;
       return 0;
-   }
    sw2_gl_ctx_ensure_at(site);
    return 1;
 }
@@ -2974,10 +2912,6 @@ static void video_thread_loop(void *data)
        * needs no GL: a push waiting for ring space while it holds the
        * context is answered by the claim, not by this wait. */
       video_thread_hw_ctx_take(thr, true);
-#ifdef __SWITCH2__
-      sw2_vtp_t0 = cpu_features_get_time_usec();
-      sw2_evt_add(3);
-#endif
 
       /* A command is in the mailbox for as long as send_cmd says so:
        * the reply clears it, so a pass after the reply - this thread
@@ -3443,11 +3377,6 @@ static void video_thread_loop(void *data)
                || pkt.type == CMD_READ_VIEWPORT_HDR))
          video_thread_handle_packet(thr, &pkt);
 
-#ifdef __SWITCH2__
-      sw2_vtp_hold_us += (unsigned long long)(cpu_features_get_time_usec() - sw2_vtp_t0);
-      sw2_vtp_n++;
-      sw2_evt_add(4);
-#endif
       video_thread_hw_ctx_release(thr, true);
    }
 }
@@ -4208,9 +4137,6 @@ static bool video_thread_frame(void *data, const void *frame_,
             thr->display_pacing ? 1 : 0);
    }
 
-#ifdef __SWITCH2__
-   retro_time_t sw2_w0 = cpu_features_get_time_usec();
-#endif
    if (!thr->nonblock)
    {
       retro_time_t target_frame_time =
@@ -4237,9 +4163,6 @@ static bool video_thread_frame(void *data, const void *frame_,
          video_thread_ring_sleep(thr, st, delta);
       }
    }
-#ifdef __SWITCH2__
-   sw2_vt_wait_us += (unsigned long long)(cpu_features_get_time_usec() - sw2_w0);
-#endif
    /* The push time and the hold's start are after the wait, if there
     * was one; otherwise the entry read still is now. */
    if (waited)
@@ -4261,15 +4184,7 @@ static bool video_thread_frame(void *data, const void *frame_,
        * outside the core's run (the menu's) held nothing and takes
        * nothing back. */
       ctx_held = video_thread_hw_ctx_held(thr);
-#ifdef __SWITCH2__
-      {
-         retro_time_t sw2_p0 = cpu_features_get_time_usec();
-#endif
       hw_slot  = video_thread_hw_publish(thr, &taken_back);
-#ifdef __SWITCH2__
-         sw2_vt_pub_us += (unsigned long long)(cpu_features_get_time_usec() - sw2_p0);
-      }
-#endif
       video_thread_hw_ctx_release(thr, false);
       frame_   = NULL;
       /* No ring: the driver cannot take a hardware frame from this
@@ -4574,23 +4489,13 @@ static bool video_thread_frame(void *data, const void *frame_,
    if (!dropped)
       thr->hit_count++;
 
-#ifdef __SWITCH2__
-   {
-      retro_time_t sw2_h0 = cpu_features_get_time_usec();
-#endif
    video_thread_pace_hold(thr, now, video_info->driver_pacing_id != 0);
-#ifdef __SWITCH2__
-      retro_time_t sw2_h1 = cpu_features_get_time_usec();
-      sw2_vt_hold_us += (unsigned long long)(sw2_h1 - sw2_h0);
-#endif
 
    /* One GL context: the publish handed it to the video thread with
     * the frame; taken back once that pass is done with it. */
 #ifdef __SWITCH2__
    if (ctx_held)
       sw2_ctx_owed_thr = thr;
-      (void)sw2_h1;
-   }
 #else
    if (ctx_held)
       video_thread_hw_ctx_take(thr, false);

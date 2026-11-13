@@ -8706,17 +8706,8 @@ static enum runloop_state_enum runloop_check_state(
          /* a MENU request's action, run as the menu's own input is */
          action = (enum menu_action)command_menu_action(action);
 #endif
-#ifdef __SWITCH2__
-         extern long long sw2_menu_iter_us;
-         long long sw2_mi0 = (long long)cpu_features_get_time_usec();
-         bool sw2_mi_ok = menu_driver_iterate(menu_st, p_disp, anim_get_ptr(),
-                  settings, action, current_time);
-         sw2_menu_iter_us += (long long)cpu_features_get_time_usec() - sw2_mi0;
-         if (!sw2_mi_ok)
-#else
          if (!menu_driver_iterate(menu_st, p_disp, anim_get_ptr(),
                   settings, action, current_time))
-#endif
          {
             if (err_on_init)
             {

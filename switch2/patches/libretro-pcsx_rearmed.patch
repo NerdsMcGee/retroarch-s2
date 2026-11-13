@@ -43,53 +43,11 @@ index cd53109..18ef686 100644
  # Nintendo Switch (libnx)
  else ifeq ($(platform), libnx)
     TARGET := $(TARGET_NAME)_libretro_$(platform).a
-diff --git a/frontend/libretro.c b/frontend/libretro.c
-index 734fc30..cd3c274 100644
---- a/frontend/libretro.c
-+++ b/frontend/libretro.c
-@@ -3502,8 +3502,37 @@ static void print_internal_fps(void)
- static bool get_bios_config_hle(void);
- static void prepare_bios(bool use_hle);
- 
-+#ifdef __SWITCH2__
-+extern void sw2_trace(const char *msg);
-+static void sw2_psx_progress(void)
-+{
-+   static unsigned frames, last_pc, same;
-+   char m[192];
-+   if (++frames % 120)
-+      return;
-+   same = (psxRegs.pc == last_pc) ? same + 1 : 0;
-+   last_pc = psxRegs.pc;
-+   {
-+      extern unsigned sw2_psx_pub_n, sw2_psx_pub_bad;
-+      snprintf(m, sizeof(m), "psx: publishes %u mismatches %u", sw2_psx_pub_n, sw2_psx_pub_bad);
-+      sw2_trace(m);
-+   }
-+   snprintf(m, sizeof(m), "psx: frame %u pc=%08x cycle=%u drc=%d thread=%d hle=%d same=%u",
-+            frames, psxRegs.pc, psxRegs.cycle, (int)!Config.Cpu,
-+#if defined(NDRC_THREAD) && !defined(DRC_DISABLE)
-+            (int)!!ndrc_g.thread.handle,
-+#else
-+            0,
-+#endif
-+            (int)Config.HLE, same);
-+   sw2_trace(m);
-+}
-+#endif
- void retro_run(void)
- {
-+#ifdef __SWITCH2__
-+   sw2_psx_progress();
-+#endif
-    //SysReset must be run while core is running,Not in menu (Locks up Retroarch)
-    if (reset_pending)
-    {
 diff --git a/libpcsxcore/new_dynarec/new_dynarec.c b/libpcsxcore/new_dynarec/new_dynarec.c
-index fb99df6..3fed375 100644
+index fb99df6..65c695c 100644
 --- a/libpcsxcore/new_dynarec/new_dynarec.c
 +++ b/libpcsxcore/new_dynarec/new_dynarec.c
-@@ -35,6 +35,62 @@
+@@ -35,6 +35,43 @@
  #include <switch.h>
  static Jit g_jit;
  #endif
@@ -100,11 +58,10 @@ index fb99df6..3fed375 100644
 + * path's jitTransitionToExecutable() would publish the whole staging buffer
 + * on every write. */
 +#include <ouncehen.h>
-+extern void sw2_trace(const char *msg);
++void SysPrintf(const char *fmt, ...);
 +/* Publishes come from the compile thread and the emulator's thread: one at
-+ * a time. Each is checked: the rx bytes must equal the staged bytes. */
++ * a time. */
 +static Mutex sw2_pub_lock;
-+unsigned sw2_psx_pub_n, sw2_psx_pub_bad, sw2_psx_pub_thr;
 +static void sw2_jit_publish(void *start, void *end)
 +{
 +  uintptr_t rw = (uintptr_t)g_jit.rw_addr;
@@ -124,27 +81,9 @@ index fb99df6..3fed375 100644
 +  OuncehenJitRange r = { (u64)(s - rw), (u64)(e - s) };
 +  mutexLock(&sw2_pub_lock);
 +  Result rc = ouncehenJitPublishRanges(&g_jit, &r, 1);
-+  sw2_psx_pub_n++;
-+  if (R_SUCCEEDED(rc)) {
-+    const unsigned char *a = (const unsigned char *)g_jit.rx_addr + r.offset;
-+    const unsigned char *b = (const unsigned char *)g_jit.rw_addr + r.offset;
-+    if (memcmp(a, b, r.size) != 0) {
-+      size_t k = 0;
-+      while (k < r.size && a[k] == b[k]) k++;
-+      if (sw2_psx_pub_bad++ < 20) {
-+        char m[160];
-+        snprintf(m, sizeof(m), "psx: publish MISMATCH off=%llx size=%llx first diff +%zx rx=%02x rw=%02x",
-+                 (unsigned long long)r.offset, (unsigned long long)r.size, k, a[k], b[k]);
-+        sw2_trace(m);
-+      }
-+    }
-+  }
 +  mutexUnlock(&sw2_pub_lock);
 +  if (R_FAILED(rc)) {
-+    char m[128];
-+    snprintf(m, sizeof(m), "psx: publish FAILED rc=%x off=%llx size=%llx", (unsigned)rc,
-+             (unsigned long long)r.offset, (unsigned long long)r.size);
-+    sw2_trace(m);
++    SysPrintf("ouncehenJitPublishRanges failed: %08x\n", (unsigned)rc);
 +    abort();
 +  }
 +}
@@ -152,7 +91,7 @@ index fb99df6..3fed375 100644
  
  #include "new_dynarec_config.h"
  #include "../psxhle.h"
-@@ -675,6 +731,8 @@ static void mprotect_w_x(void *start, void *end, int is_x)
+@@ -675,6 +712,8 @@ static void mprotect_w_x(void *start, void *end, int is_x)
      sceKernelCloseVMDomain();
    else
      sceKernelOpenVMDomain();
@@ -161,7 +100,7 @@ index fb99df6..3fed375 100644
    #elif defined(HAVE_LIBNX)
    Result rc;
    // check to avoid the full flush in jitTransitionToExecutable()
-@@ -714,6 +772,8 @@ void new_dyna_clear_cache(void *start, void *end)
+@@ -714,6 +753,8 @@ void new_dyna_clear_cache(void *start, void *end)
      ctr_clear_cache_range(start, end);
    else
      ctr_clear_cache();
@@ -170,7 +109,7 @@ index fb99df6..3fed375 100644
    #elif defined(HAVE_LIBNX)
    if (g_jit.type == JitType_CodeMemory) {
      armDCacheClean(start, len);
-@@ -745,8 +805,13 @@ static void end_tcache_write(void *start, void *end, int clear_cache)
+@@ -745,8 +786,13 @@ static void end_tcache_write(void *start, void *end, int clear_cache)
    if ((size_t)ndrc_g.thread.dirty_end < (size_t)end)
      ndrc_g.thread.dirty_end = end;
  #endif
@@ -184,7 +123,7 @@ index fb99df6..3fed375 100644
  
    mprotect_w_x(start, end, 1);
  }
-@@ -1649,7 +1714,7 @@ static void *get_trampoline(const void *f)
+@@ -1649,7 +1695,7 @@ static void *get_trampoline(const void *f)
      start_tcache_write(&tramp->f[i], &tramp->f[i + 1]);
      tramp->f[i] = f;
      end_tcache_write(&tramp->f[i], &tramp->f[i + 1], 1);
@@ -193,22 +132,31 @@ index fb99df6..3fed375 100644
      // invalidate the RX mirror (unsure if necessary, but just in case...)
      armDCacheFlush(&ndrc->tramp.f[i], sizeof(ndrc->tramp.f[i]));
  #endif
-@@ -6707,10 +6772,27 @@ void new_dynarec_init(void)
+@@ -3616,8 +3662,15 @@ static void do_store_smc_check(struct compile_state *st, int i,
+   //if (i_regs->waswritten & (1<<dops[i].rs1))
+   //  return;
+   // (naively) assume nobody will run code from stack
++  // Not on Switch 2: Gran Turismo copies its overlay loader onto the stack
++  // and runs it there (FlushCache, copy the new EXE, Exec). With stack
++  // stores unchecked, compiled stack code went stale and the race load
++  // jumped to the old program (8fa40028 / RI loop at 80029ff8). Checking
++  // them fixed it (2026-11-12); the cost is one byte load and a branch.
++#ifndef __SWITCH2__
+   if (dops[i].rs1 == 29)
+     return;
++#endif
+ 
+   int j, imm_maxdiff = 32, imm_min = cinfo[i].imm, imm_max = cinfo[i].imm, count = 1;
+   if (i < st->slen - 1 && dops[i+1].is_store && dops[i+1].rs1 == dops[i].rs1
+@@ -6707,10 +6760,20 @@ void new_dynarec_init(void)
    if (R_FAILED(rc))
      SysPrintf("jitCreate failed: %08x\n", rc);
    SysPrintf("jitCreate: RX: %p RW: %p type: %d\n", g_jit.rx_addr, g_jit.rw_addr, g_jit.type);
 +#ifdef __SWITCH2__
-+  {
-+    char m[160];
-+    snprintf(m, sizeof(m), "psx: jitCreate rc=%x size=%x type=%d rw=%p rx=%p exec=%d",
-+             (unsigned)rc, (unsigned)sizeof(*ndrc), (int)g_jit.type, g_jit.rw_addr, g_jit.rx_addr,
-+             (int)g_jit.is_executable);
-+    sw2_trace(m);
-+    if (R_FAILED(rc))
-+      abort();
-+    if (g_jit.is_executable)
-+      jitTransitionToWritable(&g_jit);
-+  }
++  if (R_FAILED(rc))
++    abort();
++  if (g_jit.is_executable)
++    jitTransitionToWritable(&g_jit);
 +#else
    jitTransitionToWritable(&g_jit);
 +#endif

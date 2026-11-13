@@ -1245,6 +1245,9 @@ ifeq ($(TARGET), retroarch_switch)
    ifeq ($(HAVE_OPENGL), 1)
       OBJ += gfx/drivers_context/switch_ctx.o
    endif
+   ifeq ($(HAVE_VULKAN), 1)
+      OBJ += gfx/drivers_context/switch_vk_ctx.o
+   endif
    OBJ += audio/drivers/switch_audio.o \
           input/drivers/switch_input.o \
           input/drivers_joypad/switch_joypad.o \

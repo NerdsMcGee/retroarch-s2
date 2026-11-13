@@ -1286,13 +1286,6 @@ static sthread_t *sthread_create_ex(void (*thread_func)(void*),
          rc       = threadCreate(&thread->t, thread_wrap, data,
                NULL, stack, prio, core);
 #ifdef __SWITCH2__
-      {
-         extern void sw2_trace(const char *);
-         extern int snprintf(char *, size_t, const char *, ...);
-         char m[96];
-         snprintf(m, sizeof(m), "thread on core %d: rc=%08x", core, (unsigned)rc);
-         sw2_trace(m);
-      }
       if (R_FAILED(rc) && core != -2)
       {
          core = -2;

@@ -27,22 +27,20 @@
 
 #include "../common/switch_defines.h"
 #include "../../frontend/frontend_driver.h"
+#include "../../verbosity.h"
 
 /* TODO/FIXME - global referenced */
 extern bool platform_switch_has_focus;
 
-extern void sw2_trace(const char *m);
 
 void switch_ctx_destroy(void *data)
 {
     switch_ctx_data_t *ctx_nx = (switch_ctx_data_t *)data;
-    sw2_trace("ctx_destroy");
 
     if (ctx_nx)
     {
 #ifdef HAVE_EGL
         egl_destroy(&ctx_nx->egl);
-        sw2_trace("egl_destroyed");
 #endif
         free(ctx_nx);
     }
@@ -63,7 +61,6 @@ static void switch_ctx_get_video_size(void *data,
    }
 }
 
-extern void sw2_trace(const char *m);
 static void *switch_ctx_init(void *video_driver)
 {
 #ifdef HAVE_EGL
@@ -102,12 +99,10 @@ static void *switch_ctx_init(void *video_driver)
     setenv("NV50_PROG_CHIPSET", "0x120", 1);
 #endif
 
-    sw2_trace("ctx_init");
     /* Needs to be here */
     ctx_nx->win = nwindowGetDefault();
     nwindowSetDimensions(ctx_nx->win, 1920, 1080);
 
-    sw2_trace("pre-egl_init");
 #ifdef HAVE_EGL
     if (!egl_init_context(&ctx_nx->egl, EGL_NONE, EGL_DEFAULT_DISPLAY,
                           &major, &minor, &n, attribs, NULL))
@@ -117,7 +112,6 @@ static void *switch_ctx_init(void *video_driver)
     }
 #endif
 
-    sw2_trace("egl_init ok");
     return ctx_nx;
 
 error:
@@ -166,19 +160,17 @@ static bool switch_ctx_set_video_mode(void *data,
     switch_ctx_data_t *ctx_nx = (switch_ctx_data_t *)data;
     unsigned win_dims         = 0;
 
-    sw2_trace("set_video_mode");
     switch_ctx_get_video_size(data, &win_dims);
 
     ctx_nx->refresh_rate = 60;
 
-    sw2_trace("pre-create_context");
 #ifdef HAVE_EGL
     if (!egl_create_context(&ctx_nx->egl, contextAttributeList))
     {
         egl_report_error();
 #ifdef HAVE_OPENGLES3
         /* no ES 3 context: fall back to ES 2 */
-        sw2_trace("ctx: GLES3 context failed, trying GLES2");
+        RARCH_WARN("[EGL] No OpenGL ES 3 context, trying OpenGL ES 2.\n");
         if (!egl_create_context(&ctx_nx->egl, contextAttributeListES2))
         {
             egl_report_error();
@@ -188,19 +180,13 @@ static bool switch_ctx_set_video_mode(void *data,
         goto error;
 #endif
     }
-#ifdef HAVE_OPENGLES3
-    else
-        sw2_trace("ctx: GLES3 context created");
-#endif
 #endif
 
-    sw2_trace("pre-create_surface");
 #ifdef HAVE_EGL
     if (!egl_create_surface(&ctx_nx->egl, ctx_nx->win))
         goto error;
 #endif
 
-    sw2_trace("surface ok");
     nwindowSetCrop(ctx_nx->win, 0, 1080 - VIDEO_SCALE_H(win_dims),
           VIDEO_SCALE_W(win_dims), 1080);
 
@@ -225,7 +211,6 @@ static enum gfx_ctx_api switch_ctx_get_api(void *data) { return GFX_CTX_OPENGL_A
 static bool switch_ctx_bind_api(void *data,
       enum gfx_ctx_api api, unsigned major, unsigned minor)
 {
-    sw2_trace("bind_api");
     if (api == GFX_CTX_OPENGL_API)
         if (egl_bind_api(EGL_OPENGL_API))
             return true;
@@ -248,27 +233,11 @@ static void switch_ctx_set_swap_interval(void *data, int swap_interval)
 #endif
 }
 
-#ifdef __SWITCH2__
-/* Read by the Dreamcast core's timing report: time in eglSwapBuffers on the video thread */
-unsigned long long sw2_swap_us;
-unsigned sw2_swap_n;
-#endif
 static void switch_ctx_swap_buffers(void *data)
 {
 #ifdef HAVE_EGL
-    static int n;
-    if (n < 3) { n++; sw2_trace("swap_buffers"); }
     switch_ctx_data_t *ctx_nx = (switch_ctx_data_t*)data;
-#ifdef __SWITCH2__
-    {
-       retro_time_t t0 = cpu_features_get_time_usec();
-       egl_swap_buffers(&ctx_nx->egl);
-       sw2_swap_us += (unsigned long long)(cpu_features_get_time_usec() - t0);
-       sw2_swap_n++;
-    }
-#else
     egl_swap_buffers(&ctx_nx->egl);
-#endif
 #endif
 }
 

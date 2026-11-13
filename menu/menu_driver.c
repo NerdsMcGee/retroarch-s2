@@ -7672,26 +7672,8 @@ void menu_driver_toggle(
       video_state_get_ptr()->frame_delay_pause = true;
 }
 
-#ifdef __SWITCH2__
-/* Menu hitch watch: the main loop's iterations for 3 s after the menu
- * opens or closes, traced when slow (retroarch.c) */
-long long sw2_menu_watch_until;
-long long sw2_menu_iter_us;
-extern void sw2_trace(const char *);
-static void sw2_menu_watch(const char *what, long long t0)
-{
-   char m[96];
-   long long now = (long long)cpu_features_get_time_usec();
-   snprintf(m, sizeof(m), "menuwatch: %s took %lldus", what, now - t0);
-   sw2_trace(m);
-   sw2_menu_watch_until = now + 3000000;
-}
-#endif
 void retroarch_menu_running(void)
 {
-#ifdef __SWITCH2__
-   long long sw2_t0 = (long long)cpu_features_get_time_usec();
-#endif
    runloop_state_t *runloop_st     = runloop_state_get_ptr();
    video_driver_state_t *video_st  = video_state_get_ptr();
    settings_t *settings            = config_get_ptr();
@@ -7780,16 +7762,10 @@ void retroarch_menu_running(void)
    if (input_overlay_hide_in_menu)
       command_event(CMD_EVENT_OVERLAY_UNLOAD, NULL);
 #endif
-#ifdef __SWITCH2__
-   sw2_menu_watch("open", sw2_t0);
-#endif
 }
 
 void retroarch_menu_running_finished(bool quit)
 {
-#ifdef __SWITCH2__
-   sw2_menu_watch("close", (long long)cpu_features_get_time_usec());
-#endif
    runloop_state_t *runloop_st     = runloop_state_get_ptr();
    video_driver_state_t*video_st   = video_state_get_ptr();
    settings_t *settings            = config_get_ptr();

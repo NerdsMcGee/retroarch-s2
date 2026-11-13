@@ -110,107 +110,76 @@ index 5dd846b..afd1dfd 100644
  	dwnd().reinitGfxContext();
  }
  }
-diff --git a/GLideN64/src/DisplayWindow.cpp b/GLideN64/src/DisplayWindow.cpp
-index c817af3..e9d8623 100644
---- a/GLideN64/src/DisplayWindow.cpp
-+++ b/GLideN64/src/DisplayWindow.cpp
-@@ -8,6 +8,7 @@
- #include "PluginAPI.h"
- #include "FrameBuffer.h"
- 
-+extern "C" void sw2_trace(const char *msg);
- bool DisplayWindow::start()
- {
- 	if (!_start())
-@@ -15,8 +16,11 @@ bool DisplayWindow::start()
- 
- 	graphics::ObjectHandle::defaultFramebuffer = _getDefaultFramebuffer();
- 
-+	sw2_trace("n64: gfxContext.init");
- 	gfxContext.init();
-+	sw2_trace("n64: drawer initData");
- 	m_drawer._initData();
-+	sw2_trace("n64: drawer initData done");
- 	m_buffersSwapCount = 0;
- 
- 	// only query max MSAA when needed
-diff --git a/GLideN64/src/Graphics/OpenGLContext/GLSL/glsl_CombinerProgramBuilder.cpp b/GLideN64/src/Graphics/OpenGLContext/GLSL/glsl_CombinerProgramBuilder.cpp
-index f0552f9..344cb96 100644
---- a/GLideN64/src/Graphics/OpenGLContext/GLSL/glsl_CombinerProgramBuilder.cpp
-+++ b/GLideN64/src/Graphics/OpenGLContext/GLSL/glsl_CombinerProgramBuilder.cpp
-@@ -342,10 +342,29 @@ CombinerInputs CombinerProgramBuilder::compileCombiner(const CombinerKey & _key,
- 	return inputs;
- }
- 
+diff --git a/GLideN64/src/Graphics/OpenGLContext/opengl_ColorBufferReaderWithPixelBuffer.cpp b/GLideN64/src/Graphics/OpenGLContext/opengl_ColorBufferReaderWithPixelBuffer.cpp
+index ac825de..1c07705 100644
+--- a/GLideN64/src/Graphics/OpenGLContext/opengl_ColorBufferReaderWithPixelBuffer.cpp
++++ b/GLideN64/src/Graphics/OpenGLContext/opengl_ColorBufferReaderWithPixelBuffer.cpp
+@@ -55,7 +55,18 @@ const u8 * ColorBufferReaderWithPixelBuffer::_readPixels(const ReadColorBufferPa
+ 	// If Sync, read pixels from the buffer, copy them to RDRAM.
+ 	// If not Sync, read pixels from the buffer, copy pixels from the previous buffer to RDRAM.
+ 	if (!_params.sync) {
 +#if defined(__SWITCH2__)
-+#include <switch.h>
-+extern "C" unsigned sw2_n64_shaders;
-+extern "C" unsigned long long sw2_n64_shader_ticks, sw2_n64_shader_max;
-+namespace {
-+struct Sw2ShaderTimer {
-+	u64 t0 = armGetSystemTick();
-+	~Sw2ShaderTimer() {
-+		const u64 dt = armGetSystemTick() - t0;
-+		sw2_n64_shaders++;
-+		sw2_n64_shader_ticks += dt;
-+		if (dt > sw2_n64_shader_max) sw2_n64_shader_max = dt;
-+	}
-+};
-+}
++		// A PBO that was never filled (fresh reader) holds nothing to copy: mapping it
++		// only waits on the GPU for garbage, so skip the RDRAM update this time.
++		m_filled[m_curIndex] = true;
 +#endif
- graphics::CombinerProgram * CombinerProgramBuilder::buildCombinerProgram(Combiner & _color,
- 																		Combiner & _alpha,
- 																		const CombinerKey & _key)
- {
+ 		m_curIndex = (m_curIndex + 1) % m_numPBO;
 +#if defined(__SWITCH2__)
-+	Sw2ShaderTimer sw2_timer;
++		if (!m_filled[m_curIndex]) {
++			m_bindBuffer->bind(Parameter(GL_PIXEL_PACK_BUFFER), ObjectHandle::null);
++			return nullptr;
++		}
 +#endif
- 	CombinerProgramBuilder::s_cycleType = _key.getCycleType();
- 	CombinerProgramBuilder::s_textureConvert.setMode(_key.getBilerp());
- 
-diff --git a/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp b/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp
-index c1e51b5..2741646 100644
---- a/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp
-+++ b/GLideN64/src/Graphics/OpenGLContext/opengl_GLInfo.cpp
-@@ -1,3 +1,4 @@
-+#include <cstdio>
- #include <Log.h>
- #include <Config.h>
- #include "opengl_Utils.h"
-@@ -27,8 +28,10 @@ void APIENTRY on_gl_error(GLenum source,
- 	LOG(LOG_ERROR, "%s", message);
- }
- 
-+extern "C" void sw2_trace(const char *msg);
- void GLInfo::init() {
- 	const char * strDriverVersion = reinterpret_cast<const char *>(glGetString(GL_VERSION));
-+	{ char m[160]; snprintf(m, sizeof(m), "n64: GL_VERSION=%s", strDriverVersion ? strDriverVersion : "(null)"); sw2_trace(m); }
- 	isGLESX = strstr(strDriverVersion, "OpenGL ES") != nullptr;
- 	isGLES2 = strstr(strDriverVersion, "OpenGL ES 2") != nullptr;
- 	if (isGLES2) {
-@@ -141,6 +144,14 @@ void GLInfo::init() {
- 			Utils::isExtensionSupported(*this, "GL_ARB_texture_storage");
- 
- 	shaderStorage = false;
-+	{
-+		GLint n = 0;
-+		glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &n);
-+		char m[128];
-+		snprintf(m, sizeof(m), "n64: program binary formats=%d (shader storage option=%d)", (int)n,
-+		         (int)config.generalEmulation.enableShadersStorage);
-+		sw2_trace(m);
-+	}
- 	if (config.generalEmulation.enableShadersStorage != 0) {
- 		const char * strGetProgramBinary = isGLESX
- 			? "GL_OES_get_program_binary"
-@@ -149,6 +160,7 @@ void GLInfo::init() {
- 			GLint numBinaryFormats = 0;
- 			glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &numBinaryFormats);
- 			shaderStorage = numBinaryFormats > 0;
-+			{ char m[96]; snprintf(m, sizeof(m), "n64: program binary formats=%d", (int)numBinaryFormats); sw2_trace(m); }
- 		}
+ 		m_bindBuffer->bind(Parameter(GL_PIXEL_PACK_BUFFER), ObjectHandle(m_PBO[m_curIndex]));
  	}
  
+diff --git a/GLideN64/src/Graphics/OpenGLContext/opengl_ColorBufferReaderWithPixelBuffer.h b/GLideN64/src/Graphics/OpenGLContext/opengl_ColorBufferReaderWithPixelBuffer.h
+index f2508cd..bc8c4f0 100644
+--- a/GLideN64/src/Graphics/OpenGLContext/opengl_ColorBufferReaderWithPixelBuffer.h
++++ b/GLideN64/src/Graphics/OpenGLContext/opengl_ColorBufferReaderWithPixelBuffer.h
+@@ -25,6 +25,7 @@ private:
+ 	static const int _maxPBO = 3;
+ 	GLuint m_PBO[_maxPBO];
+ 	u32 m_curIndex;
++	bool m_filled[_maxPBO] = {};
+ };
+ 
+ }
+diff --git a/GLideN64/src/Graphics/OpenGLContext/opengl_ContextImpl.cpp b/GLideN64/src/Graphics/OpenGLContext/opengl_ContextImpl.cpp
+index 0d80351..bff5a5c 100644
+--- a/GLideN64/src/Graphics/OpenGLContext/opengl_ContextImpl.cpp
++++ b/GLideN64/src/Graphics/OpenGLContext/opengl_ContextImpl.cpp
+@@ -186,9 +186,9 @@ void ContextImpl::clearColorBuffer(f32 _red, f32 _green, f32 _blue, f32 _alpha)
+ 		m_cachedFunctions->getCachedClearColor()->setClearColor(_red, _green, _blue, _alpha);
+ 		glClear(GL_COLOR_BUFFER_BIT);
+ 	} else {
+-#if defined(OS_ANDROID)
++#if defined(OS_ANDROID) || defined(__SWITCH2__)
+ 		// Using the GLES3 paths causes some background garbage where the Overscan is
+-		// TODO: Investigate this
++		// (seen on Android, and on Switch 2's Zink/NVK as magenta strips at the borders)
+ 		m_cachedFunctions->getCachedClearColor()->setClearColor(_red, _green, _blue, _alpha);
+ 		glClear(GL_COLOR_BUFFER_BIT);
+ #else
+diff --git a/GLideN64/src/Graphics/OpenGLContext/opengl_UnbufferedDrawer.cpp b/GLideN64/src/Graphics/OpenGLContext/opengl_UnbufferedDrawer.cpp
+index 0737b9e..11c3712 100644
+--- a/GLideN64/src/Graphics/OpenGLContext/opengl_UnbufferedDrawer.cpp
++++ b/GLideN64/src/Graphics/OpenGLContext/opengl_UnbufferedDrawer.cpp
+@@ -132,7 +132,13 @@ void UnbufferedDrawer::drawRects(const graphics::Context::DrawRectParameters & _
+ 			glVertexAttribPointer(rectAttrib::position, 4, GL_FLOAT, GL_FALSE, sizeof(RectVertex), ptr);
+ 	}
+ 
+-	if (_params.texrect && _params.combiner->usesTile(0)) {
++	// The accurate texture path passes a single coordinate set (aTexCoord0)
++	// to the texture engines of both tiles, so it is needed whenever either
++	// tile is used, not only tile 0. Without it, a rect that samples only
++	// tile 1 reads the attribute's default (0,0) and collapses to one texel.
++	const bool usesTexCoord0 = _params.combiner->usesTile(0) ||
++		(config.generalEmulation.enableInaccurateTextureCoordinates == 0u && _params.combiner->usesTile(1));
++	if (_params.texrect && usesTexCoord0) {
+ 		m_cachedAttribArray->enableVertexAttribArray(rectAttrib::texcoord0, true);
+ 		const void * ptr = &_params.vertices->s0;
+ 		if (_updateAttribPointer(rectAttrib::texcoord0, ptr))
 diff --git a/GLideN64/src/MupenPlusPluginAPI.cpp b/GLideN64/src/MupenPlusPluginAPI.cpp
 index 8c7f474..6f61d6e 100644
 --- a/GLideN64/src/MupenPlusPluginAPI.cpp
@@ -271,40 +240,19 @@ index 8c7f474..6f61d6e 100644
  	api().ResizeVideoOutput(width, height);
  }
  
-diff --git a/GLideN64/src/common/CommonAPIImpl_common.cpp b/GLideN64/src/common/CommonAPIImpl_common.cpp
-index f3415a6..471c92e 100644
---- a/GLideN64/src/common/CommonAPIImpl_common.cpp
-+++ b/GLideN64/src/common/CommonAPIImpl_common.cpp
-@@ -196,6 +196,7 @@ void PluginAPI::RomClosed()
- 	//osal_keys_quit();
- }
- 
-+extern "C" void sw2_trace(const char *msg);
- int PluginAPI::RomOpen()
- {
- 	//osal_keys_init();
-@@ -208,11 +209,16 @@ int PluginAPI::RomOpen()
- 	m_pluginThreadCv.wait(m_pluginThreadMtx);
- 	m_pluginThreadMtx.unlock();
- #else
-+	sw2_trace("n64: RSP_Init");
- 	RSP_Init();
-+	sw2_trace("n64: GBI.init");
- 	GBI.init();
-+	sw2_trace("n64: Config_LoadConfig");
- 	Config_LoadConfig();
-+	sw2_trace("n64: dwnd start");
- 	if (!dwnd().start())
- 		return 0;
-+	sw2_trace("n64: dwnd started");
- #endif
- 
- 	m_bRomOpen = true;
 diff --git a/Makefile b/Makefile
-index 2443f80..b1aa40e 100644
+index 2443f80..fd1ca02 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -219,6 +219,30 @@ else ifeq ($(platform), libnx)
+@@ -4,6 +4,7 @@ FORCE_GLES3 ?= 0
+ LLE ?= 0
+ HAVE_PARALLEL_RSP ?= 0
+ HAVE_PARALLEL_RDP ?= 0
++LIGHTNING_HAVE_MMAP ?= 1
+ 
+ SYSTEM_MINIZIP ?= 0
+ SYSTEM_LIBPNG ?= 0
+@@ -219,6 +220,35 @@ else ifeq ($(platform), libnx)
     WITH_DYNAREC = aarch64
     STATIC_LINKING = 1
  
@@ -329,13 +277,18 @@ index 2443f80..b1aa40e 100644
 +   GLES = 0
 +   GLES3 = 1
 +   HAVE_THR_AL = 1
++   HAVE_PARALLEL_RDP = 1
++   HAVE_PARALLEL_RSP = 1
++   LIGHTNING_HAVE_MMAP = 0
++   LLE = 1
++   COREFLAGS += -include $(CURDIR)/mupen64plus-video-paraLLEl/parallel-rdp/volk/volk_sw2_rename.h
 +   WITH_DYNAREC = aarch64
 +   STATIC_LINKING = 1
 +
  # Jetson Xavier NX
  else ifeq ($(platform), jetson-xavier)
     TARGET := $(TARGET_NAME)_libretro.so
-@@ -655,7 +679,7 @@ ifeq ($(DEBUG), 1)
+@@ -655,7 +685,7 @@ ifeq ($(DEBUG), 1)
     CPUOPTS += -DOPENGL_DEBUG
  else
     CPUOPTS += -DNDEBUG -fsigned-char -ffast-math -fno-strict-aliasing -fomit-frame-pointer -fvisibility=hidden
@@ -344,7 +297,16 @@ index 2443f80..b1aa40e 100644
     CPUOPTS := -O3 $(CPUOPTS)
  endif
     CXXFLAGS += -fvisibility-inlines-hidden
-@@ -728,3 +752,9 @@ clean:
+@@ -717,7 +747,7 @@ $(AWK_DEST_DIR)/asm_defines_nasm.h: $(ASM_DEFINES_OBJ)
+ 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+ 
+ $(RSPDIR_PARALLEL)/lightning/lib/lightning.o: $(RSPDIR_PARALLEL)/lightning/lib/lightning.c
+-	$(CC) $(CPPFLAGS) $(CFLAGS) -DHAVE_MMAP=1 -c $< -o $@
++	$(CC) $(CPPFLAGS) $(CFLAGS) -DHAVE_MMAP=$(LIGHTNING_HAVE_MMAP) -c $< -o $@
+ 
+ %.o: %.cpp
+ 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+@@ -728,3 +758,9 @@ clean:
  	rm -f $(TARGET)
  
  .PHONY: clean
@@ -368,15 +330,221 @@ index 72aef3a..ee25db1 100644
  else
  	SOURCES_CXX += $(VIDEODIR_GLIDEN64)/src/CRC_OPT.cpp
 diff --git a/libretro-common/glsm/glsm.c b/libretro-common/glsm/glsm.c
-index b3e8c60..b3ee2b9 100644
+index b3e8c60..0b5f014 100644
 --- a/libretro-common/glsm/glsm.c
 +++ b/libretro-common/glsm/glsm.c
-@@ -3340,6 +3340,33 @@ void* glsm_get_proc_address(const char* sym)
+@@ -268,6 +268,18 @@ static struct gl_cached_state gl_state;
+ 
+ static bool copy_image_support = 0;
+ static struct gl_program_uniforms program_uniforms[MAX_UNIFORMS][MAX_UNIFORMS];
++/* The cache is indexed by GL program name and uniform location with no bounds
++ * check. Program names share one counter with shaders and grow past
++ * MAX_UNIFORMS once a core has built a few hundred programs (GLideN64 does),
++ * and a location of -1 (uniform not found) indexes before the row. Either case
++ * read and wrote outside the array. Out-of-range programs or locations now
++ * bypass the cache and always reach GL. */
++static struct gl_program_uniforms glsm_uniform_scratch;
++static inline bool glsm_uniform_cacheable(GLint location)
++{
++   return gl_state.program < MAX_UNIFORMS && location >= 0 && location < MAX_UNIFORMS;
++}
++#define GLSM_UNIFORM_CACHE(location) (*(glsm_uniform_cacheable(location) ? &program_uniforms[gl_state.program][location] : &glsm_uniform_scratch))
+ static struct gl_framebuffers* framebuffers[MAX_FRAMEBUFFERS];
+ 
+ static GLenum active_texture;
+@@ -1666,9 +1678,8 @@ GLuint rglCreateProgram(void)
+    log_cb(RETRO_LOG_INFO, "glCreateProgram.\n");
+ #endif
+    GLuint temp = glCreateProgram();
+-   int i;
+-   for (i = 0; i < MAX_UNIFORMS; ++i)
+-      memset(&program_uniforms[temp][i], 0, sizeof(struct gl_program_uniforms));
++   if (temp < MAX_UNIFORMS)
++      memset(program_uniforms[temp], 0, sizeof(program_uniforms[temp]));
+    return temp;
+ }
+ 
+@@ -1965,9 +1976,9 @@ void rglUniform1f(GLint location, GLfloat v0)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform1f.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform1f != v0) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform1f != v0) {
+       glUniform1f(location, v0);
+-      program_uniforms[gl_state.program][location].uniform1f = v0;
++      GLSM_UNIFORM_CACHE(location).uniform1f = v0;
+    }
+ }
+ 
+@@ -1982,9 +1993,9 @@ void rglUniform1fv(GLint location,  GLsizei count,  const GLfloat *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform1fv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform1f != value[0]) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform1f != value[0]) {
+       glUniform1fv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform1f = value[0];
++      GLSM_UNIFORM_CACHE(location).uniform1f = value[0];
+    }
+ }
+ 
+@@ -1999,9 +2010,9 @@ void rglUniform1iv(GLint location,  GLsizei count,  const GLint *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform1iv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform1i != value[0]) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform1i != value[0]) {
+       glUniform1iv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform1i = value[0];
++      GLSM_UNIFORM_CACHE(location).uniform1i = value[0];
+    }
+ }
+ 
+@@ -2090,9 +2101,9 @@ void rglUniform1i(GLint location, GLint v0)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform1i.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform1i != v0) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform1i != v0) {
+       glUniform1i(location, v0);
+-      program_uniforms[gl_state.program][location].uniform1i = v0;
++      GLSM_UNIFORM_CACHE(location).uniform1i = v0;
+    }
+ }
+ 
+@@ -2107,10 +2118,10 @@ void rglUniform2f(GLint location, GLfloat v0, GLfloat v1)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform2f.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform2f[0] != v0 || program_uniforms[gl_state.program][location].uniform2f[1] != v1) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform2f[0] != v0 || GLSM_UNIFORM_CACHE(location).uniform2f[1] != v1) {
+       glUniform2f(location, v0, v1);
+-      program_uniforms[gl_state.program][location].uniform2f[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform2f[1] = v1;
++      GLSM_UNIFORM_CACHE(location).uniform2f[0] = v0;
++      GLSM_UNIFORM_CACHE(location).uniform2f[1] = v1;
+    }
+ }
+ 
+@@ -2125,10 +2136,10 @@ void rglUniform2i(GLint location, GLint v0, GLint v1)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform2i.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform2i[0] != v0 || program_uniforms[gl_state.program][location].uniform2i[1] != v1) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform2i[0] != v0 || GLSM_UNIFORM_CACHE(location).uniform2i[1] != v1) {
+       glUniform2i(location, v0, v1);
+-      program_uniforms[gl_state.program][location].uniform2i[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform2i[1] = v1;
++      GLSM_UNIFORM_CACHE(location).uniform2i[0] = v0;
++      GLSM_UNIFORM_CACHE(location).uniform2i[1] = v1;
+    }
+ }
+ 
+@@ -2143,10 +2154,10 @@ void rglUniform2fv(GLint location, GLsizei count, const GLfloat *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform2fv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform2f[0] != value[0] || program_uniforms[gl_state.program][location].uniform2f[1] != value[1]) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform2f[0] != value[0] || GLSM_UNIFORM_CACHE(location).uniform2f[1] != value[1]) {
+       glUniform2fv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform2f[0] = value[0];
+-      program_uniforms[gl_state.program][location].uniform2f[1] = value[1];
++      GLSM_UNIFORM_CACHE(location).uniform2f[0] = value[0];
++      GLSM_UNIFORM_CACHE(location).uniform2f[1] = value[1];
+    }
+ }
+ 
+@@ -2161,11 +2172,11 @@ void rglUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform3f.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform3f[0] != v0 || program_uniforms[gl_state.program][location].uniform3f[1] != v1 || program_uniforms[gl_state.program][location].uniform3f[2] != v2) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform3f[0] != v0 || GLSM_UNIFORM_CACHE(location).uniform3f[1] != v1 || GLSM_UNIFORM_CACHE(location).uniform3f[2] != v2) {
+       glUniform3f(location, v0, v1, v2);
+-      program_uniforms[gl_state.program][location].uniform3f[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform3f[1] = v1;
+-      program_uniforms[gl_state.program][location].uniform3f[2] = v2;
++      GLSM_UNIFORM_CACHE(location).uniform3f[0] = v0;
++      GLSM_UNIFORM_CACHE(location).uniform3f[1] = v1;
++      GLSM_UNIFORM_CACHE(location).uniform3f[2] = v2;
+    }
+ }
+ 
+@@ -2180,11 +2191,11 @@ void rglUniform3fv(GLint location, GLsizei count, const GLfloat *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform3fv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform3f[0] != value[0] || program_uniforms[gl_state.program][location].uniform3f[1] != value[1] || program_uniforms[gl_state.program][location].uniform3f[2] != value[2]) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform3f[0] != value[0] || GLSM_UNIFORM_CACHE(location).uniform3f[1] != value[1] || GLSM_UNIFORM_CACHE(location).uniform3f[2] != value[2]) {
+       glUniform3fv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform3f[0] = value[0];
+-      program_uniforms[gl_state.program][location].uniform3f[1] = value[1];
+-      program_uniforms[gl_state.program][location].uniform3f[2] = value[2];
++      GLSM_UNIFORM_CACHE(location).uniform3f[0] = value[0];
++      GLSM_UNIFORM_CACHE(location).uniform3f[1] = value[1];
++      GLSM_UNIFORM_CACHE(location).uniform3f[2] = value[2];
+    }
+ }
+ 
+@@ -2199,12 +2210,12 @@ void rglUniform4i(GLint location, GLint v0, GLint v1, GLint v2, GLint v3)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform4i.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform4i[0] != v0 || program_uniforms[gl_state.program][location].uniform4i[1] != v1 || program_uniforms[gl_state.program][location].uniform4i[2] != v2 || program_uniforms[gl_state.program][location].uniform4i[3] != v3) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform4i[0] != v0 || GLSM_UNIFORM_CACHE(location).uniform4i[1] != v1 || GLSM_UNIFORM_CACHE(location).uniform4i[2] != v2 || GLSM_UNIFORM_CACHE(location).uniform4i[3] != v3) {
+       glUniform4i(location, v0, v1, v2, v3);
+-      program_uniforms[gl_state.program][location].uniform4i[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform4i[1] = v1;
+-      program_uniforms[gl_state.program][location].uniform4i[2] = v2;
+-      program_uniforms[gl_state.program][location].uniform4i[3] = v3;
++      GLSM_UNIFORM_CACHE(location).uniform4i[0] = v0;
++      GLSM_UNIFORM_CACHE(location).uniform4i[1] = v1;
++      GLSM_UNIFORM_CACHE(location).uniform4i[2] = v2;
++      GLSM_UNIFORM_CACHE(location).uniform4i[3] = v3;
+    }
+ }
+ 
+@@ -2219,12 +2230,12 @@ void rglUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform4f.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform4f[0] != v0 || program_uniforms[gl_state.program][location].uniform4f[1] != v1 || program_uniforms[gl_state.program][location].uniform4f[2] != v2 || program_uniforms[gl_state.program][location].uniform4f[3] != v3) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform4f[0] != v0 || GLSM_UNIFORM_CACHE(location).uniform4f[1] != v1 || GLSM_UNIFORM_CACHE(location).uniform4f[2] != v2 || GLSM_UNIFORM_CACHE(location).uniform4f[3] != v3) {
+       glUniform4f(location, v0, v1, v2, v3);
+-      program_uniforms[gl_state.program][location].uniform4f[0] = v0;
+-      program_uniforms[gl_state.program][location].uniform4f[1] = v1;
+-      program_uniforms[gl_state.program][location].uniform4f[2] = v2;
+-      program_uniforms[gl_state.program][location].uniform4f[3] = v3;
++      GLSM_UNIFORM_CACHE(location).uniform4f[0] = v0;
++      GLSM_UNIFORM_CACHE(location).uniform4f[1] = v1;
++      GLSM_UNIFORM_CACHE(location).uniform4f[2] = v2;
++      GLSM_UNIFORM_CACHE(location).uniform4f[3] = v3;
+    }
+ }
+ 
+@@ -2239,12 +2250,12 @@ void rglUniform4fv(GLint location, GLsizei count, const GLfloat *value)
+ #ifdef GLSM_DEBUG
+    log_cb(RETRO_LOG_INFO, "glUniform4fv.\n");
+ #endif
+-   if (program_uniforms[gl_state.program][location].uniform4f[0] != value[0] || program_uniforms[gl_state.program][location].uniform4f[1] != value[1] || program_uniforms[gl_state.program][location].uniform4f[2] != value[2] || program_uniforms[gl_state.program][location].uniform4f[3] != value[3]) {
++   if (!glsm_uniform_cacheable(location) || GLSM_UNIFORM_CACHE(location).uniform4f[0] != value[0] || GLSM_UNIFORM_CACHE(location).uniform4f[1] != value[1] || GLSM_UNIFORM_CACHE(location).uniform4f[2] != value[2] || GLSM_UNIFORM_CACHE(location).uniform4f[3] != value[3]) {
+       glUniform4fv(location, count, value);
+-      program_uniforms[gl_state.program][location].uniform4f[0] = value[0];
+-      program_uniforms[gl_state.program][location].uniform4f[1] = value[1];
+-      program_uniforms[gl_state.program][location].uniform4f[2] = value[2];
+-      program_uniforms[gl_state.program][location].uniform4f[3] = value[3];
++      GLSM_UNIFORM_CACHE(location).uniform4f[0] = value[0];
++      GLSM_UNIFORM_CACHE(location).uniform4f[1] = value[1];
++      GLSM_UNIFORM_CACHE(location).uniform4f[2] = value[2];
++      GLSM_UNIFORM_CACHE(location).uniform4f[3] = value[3];
+    }
+ }
+ 
+@@ -3340,6 +3351,25 @@ void* glsm_get_proc_address(const char* sym)
  }
  
  extern void initGLFunctions();
 +#ifdef __SWITCH2__
-+#include <switch.h>
 +extern void sw2_gl_ctx_ensure(void) __attribute__((weak));
 +/* Switch 2: the GL context is handed between the core's thread and the
 + * video thread, and the frontend takes it back for the core only when
@@ -390,22 +558,15 @@ index b3e8c60..b3ee2b9 100644
 +   if (!sw2_glsm_bind_pending)
 +      return;
 +   sw2_glsm_bind_pending = 0;
-+   {
-+      extern unsigned long long sw2_n64_bind_ticks, sw2_n64_bind_max;
-+      const u64 t0 = armGetSystemTick();
-+      if (sw2_gl_ctx_ensure)
-+         sw2_gl_ctx_ensure();
-+      glsm_state_bind();
-+      const u64 dt = armGetSystemTick() - t0;
-+      sw2_n64_bind_ticks += dt;
-+      if (dt > sw2_n64_bind_max) sw2_n64_bind_max = dt;
-+   }
++   if (sw2_gl_ctx_ensure)
++      sw2_gl_ctx_ensure();
++   glsm_state_bind();
 +}
 +#endif
  bool glsm_ctl(enum glsm_state_ctl state, void *data)
  {
     switch (state)
-@@ -3385,10 +3412,21 @@ bool glsm_ctl(enum glsm_state_ctl state, void *data)
+@@ -3385,10 +3415,21 @@ bool glsm_ctl(enum glsm_state_ctl state, void *data)
           glsm_state_setup();
           break;
        case GLSM_CTL_STATE_UNBIND:
@@ -428,62 +589,10 @@ index b3e8c60..b3ee2b9 100644
        case GLSM_CTL_NONE:
        default:
 diff --git a/libretro/libretro.c b/libretro/libretro.c
-index 4a9f129..4682fb7 100644
+index 4a9f129..bc28372 100644
 --- a/libretro/libretro.c
 +++ b/libretro/libretro.c
-@@ -37,6 +37,27 @@
- #endif
- #include <pthread.h>
- #include <glsm/glsmsym.h>
-+#if defined(__SWITCH2__)
-+extern void sw2_trace(const char *msg);
-+#define SW2T(s) sw2_trace(s)
-+/* Stutter profile, reported every 300 frames from retro_run():
-+ * JIT publishes (assem_arm64.c), blocks compiled (new_dynarec.c),
-+ * GLideN64 combiner shaders built (glsl_CombinerProgramBuilder.cpp). */
-+unsigned sw2_n64_pub_calls, sw2_n64_pub_fail;
-+unsigned long long sw2_n64_pub_bytes, sw2_n64_pub_ticks, sw2_n64_pub_max;
-+unsigned sw2_n64_blocks, sw2_n64_block_insns, sw2_n64_block_insn_max;
-+unsigned long long sw2_n64_block_ticks, sw2_n64_block_max;
-+unsigned sw2_n64_shaders;
-+extern unsigned long long sw2_n64_pass[11];
-+extern unsigned long long sw2_n64_block_cpu;
-+unsigned sw2_f_blocks, sw2_f_inv, sw2_f_dirty, sw2_f_insns;
-+unsigned long long sw2_f_block_ticks;
-+unsigned long long sw2_n64_bind_ticks, sw2_n64_bind_max, sw2_n64_emu_ticks, sw2_n64_emu_max;
-+unsigned sw2_n64_emu_slow;
-+unsigned long long sw2_n64_shader_ticks, sw2_n64_shader_max;
-+#else
-+#define SW2T(s)
-+#endif
- 
- #include "api/m64p_frontend.h"
- #include "api/m64p_types.h"
-@@ -447,6 +468,7 @@ static void emu_step_initialize(void)
- 
- static void* EmuThreadFunction(void* param)
- {
-+    SW2T("n64: EmuThread start");
-     uint32_t netplay_port = 0;
-     uint16_t netplay_player = 1;
- 
-@@ -481,6 +503,7 @@ static void* EmuThreadFunction(void* param)
- #endif
- 
-     log_cb(RETRO_LOG_DEBUG, CORE_NAME ": [EmuThread] M64CMD_EXECUTE\n");
-+    SW2T("n64: M64CMD_EXECUTE");
- 
-     // Runs until CMD_STOP
-     CoreDoCommand(M64CMD_EXECUTE, 0, NULL);
-@@ -692,6 +715,7 @@ void copy_file(char * ininame, char * fileName)
- 
- void retro_init(void)
- {
-+    SW2T("n64: retro_init");
-     char* sys_pathname;
-     wchar_t w_pathname[PATH_SIZE];
-     environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sys_pathname);
-@@ -741,7 +765,20 @@ void retro_deinit(void)
+@@ -741,7 +741,18 @@ void retro_deinit(void)
         if(!(current_rdp_type == RDP_PLUGIN_GLIDEN64 && EnableThreadedRenderer))
         {
             CoreDoCommand(M64CMD_STOP, 0, NULL);
@@ -491,150 +600,46 @@ index 4a9f129..4682fb7 100644
 +           /* GLideN64's ROM close saves the shader cache through GL: the
 +              core's thread needs the GL context, which the video thread may
 +              hold (taken on GLideN64's first entry, see glsm.c) */
-+           SW2T("n64: deinit: last run");
 +           if (current_rdp_type == RDP_PLUGIN_GLIDEN64)
 +              glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
-+           co_switch(game_thread); /* Let the core thread finish */
+            co_switch(game_thread); /* Let the core thread finish */
 +           if (current_rdp_type == RDP_PLUGIN_GLIDEN64)
 +              glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
-+           SW2T("n64: deinit: last run done");
 +#else
-            co_switch(game_thread); /* Let the core thread finish */
++           co_switch(game_thread); /* Let the core thread finish */
 +#endif
             CoreDoCommand(M64CMD_ROM_CLOSE, 0, NULL);
         }
      }
-@@ -1807,6 +1844,7 @@ void context_reset(void)
-     if(current_rdp_type == RDP_PLUGIN_GLIDEN64)
-     {
-        log_cb(RETRO_LOG_DEBUG, CORE_NAME ": context_reset()\n");
-+       SW2T("n64: context_reset");
-        glsm_ctl(GLSM_CTL_STATE_CONTEXT_RESET, NULL);
-        if (!context_setup_first_init)
-        {
-@@ -2042,8 +2080,81 @@ void retro_unload_game(void)
-     retro_savestate_complete = false;
- }
- 
+@@ -1553,7 +1564,11 @@ static void update_variables(bool startup)
+         if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+             parallel_set_synchronous_rdp(!strcmp(var.value, "True"));
+         else
 +#if defined(__SWITCH2__)
-+static void sw2_n64_report(unsigned long long dt)
-+{
-+    static unsigned frames, slow, very_slow;
-+    static unsigned long long sum, max;
-+    static unsigned fno;
-+    const unsigned long long f = armGetSystemTickFreq();
-+    fno++;
-+    /* a slow frame, with what the dynarec did in it */
-+    /* (inv and dirty: counted since the last traced frame) */
-+    if (dt * 1000000ull / f > 45000 || sw2_f_blocks > 50) {
-+        char m[200];
-+        snprintf(m, sizeof(m), "n64frame: #%u run=%uus blocks=%u insns=%u compile=%uus inv=%u dirty=%u",
-+                 fno, (unsigned)(dt * 1000000ull / f), sw2_f_blocks, sw2_f_insns,
-+                 (unsigned)(sw2_f_block_ticks * 1000000ull / f), sw2_f_inv, sw2_f_dirty);
-+        sw2_trace(m);
-+        sw2_f_inv = sw2_f_dirty = 0;
-+    }
-+    sw2_f_blocks = sw2_f_insns = 0;
-+    sw2_f_block_ticks = 0;
-+    frames++;
-+    sum += dt;
-+    if (dt > max) max = dt;
-+    if (dt * 1000000ull / f > 16700) slow++;
-+    if (dt * 1000000ull / f > 33300) very_slow++;
-+    if (frames < 300)
-+        return;
-+    {
-+        char m[300];
-+#define US(t) ((unsigned)((t) * 1000000ull / f))
-+        snprintf(m, sizeof(m), "n64prof: run avg=%uus max=%uus >16.7=%u >33.3=%u | bind avg=%uus max=%uus | emu avg=%uus max=%uus >16.7=%u | pub n=%u kb=%u total=%uus max=%uus | blocks n=%u insns avg=%u max=%u total=%uus max=%uus | shaders n=%u total=%uus max=%uus",
-+                 US(sum / frames), US(max), slow, very_slow,
-+                 US(sw2_n64_bind_ticks / frames), US(sw2_n64_bind_max), US(sw2_n64_emu_ticks / frames), US(sw2_n64_emu_max), sw2_n64_emu_slow,
-+                 sw2_n64_pub_calls, (unsigned)(sw2_n64_pub_bytes >> 10), US(sw2_n64_pub_ticks), US(sw2_n64_pub_max),
-+                 sw2_n64_blocks, sw2_n64_blocks ? sw2_n64_block_insns / sw2_n64_blocks : 0, sw2_n64_block_insn_max,
-+                 US(sw2_n64_block_ticks), US(sw2_n64_block_max),
-+                 sw2_n64_shaders, US(sw2_n64_shader_ticks), US(sw2_n64_shader_max));
-+        sw2_trace(m);
-+        if (sw2_n64_blocks) {
-+            snprintf(m, sizeof(m), "n64blk: pre=%u p1=%u p2=%u p3=%u p4=%u p5=%u p6=%u p7=%u p8=%u p9=%u p10=%u (us)",
-+                     US(sw2_n64_pass[0]), US(sw2_n64_pass[1]), US(sw2_n64_pass[2]), US(sw2_n64_pass[3]),
-+                     US(sw2_n64_pass[4]), US(sw2_n64_pass[5]), US(sw2_n64_pass[6]), US(sw2_n64_pass[7]),
-+                     US(sw2_n64_pass[8]), US(sw2_n64_pass[9]), US(sw2_n64_pass[10]));
-+            sw2_trace(m);
-+        }
-+        if (sw2_n64_blocks) {
-+            snprintf(m, sizeof(m), "n64cpu: blocks wall=%uus cpu=%uus core=%d",
-+                     US(sw2_n64_block_ticks), US(sw2_n64_block_cpu), (int)svcGetCurrentProcessorNumber());
-+            sw2_trace(m);
-+        }
-+        sw2_n64_block_cpu = 0;
-+        memset(sw2_n64_pass, 0, sizeof(sw2_n64_pass));
-+#undef US
-+    }
-+    frames = slow = very_slow = 0;
-+    sum = max = 0;
-+    sw2_n64_pub_calls = 0; sw2_n64_pub_bytes = sw2_n64_pub_ticks = sw2_n64_pub_max = 0;
-+    sw2_n64_blocks = 0; sw2_n64_block_insns = sw2_n64_block_insn_max = 0; sw2_n64_block_ticks = sw2_n64_block_max = 0;
-+    sw2_n64_shaders = 0; sw2_n64_shader_ticks = sw2_n64_shader_max = 0;
-+    sw2_n64_bind_ticks = sw2_n64_bind_max = sw2_n64_emu_ticks = sw2_n64_emu_max = 0;
-+    sw2_n64_emu_slow = 0;
-+}
-+#endif
- void retro_run (void)
- {
-+#if defined(__SWITCH2__)
-+    const unsigned long long sw2_t0 = armGetSystemTick();
-+    static int sw2_freq_logged;
-+    if (!sw2_freq_logged) {
-+        char m[64];
-+        snprintf(m, sizeof(m), "n64prof: tick freq=%llu", (unsigned long long)armGetSystemTickFreq());
-+        sw2_trace(m);
-+        sw2_freq_logged = 1;
-+    }
-+#endif
-     libretro_swap_buffer = false;
-     static bool updated = false;
- 
-@@ -2061,10 +2172,25 @@ void retro_run (void)
-           }
-        }
-        
-+#if defined(__SWITCH2__)
-+       glsm_ctl(GLSM_CTL_STATE_BIND, NULL);   /* the wait is timed in sw2_glsm_bind_now() */
++            parallel_set_synchronous_rdp(false);
 +#else
-        glsm_ctl(GLSM_CTL_STATE_BIND, NULL);
-+#endif
-     }
- 
-+#if defined(__SWITCH2__)
-+    {
-+       const u64 e0 = armGetSystemTick();
-+       co_switch(game_thread);
-+       const u64 ed = armGetSystemTick() - e0;
-+       sw2_n64_emu_ticks += ed;
-+       if (ed > sw2_n64_emu_max) sw2_n64_emu_max = ed;
-+       if (ed * 1000000ull / armGetSystemTickFreq() > 16700) sw2_n64_emu_slow++;
-+    }
-+#else
-     co_switch(game_thread);
+             parallel_set_synchronous_rdp(true);
 +#endif
  
-     if(current_rdp_type == RDP_PLUGIN_GLIDEN64)
-     {
-@@ -2098,6 +2224,9 @@ void retro_run (void)
-         // screen_pitch will be 0 for GLN
-         video_cb(NULL, retro_screen_width, retro_screen_height, screen_pitch);
-     }
-+#if defined(__SWITCH2__)
-+    sw2_n64_report(armGetSystemTick() - sw2_t0);
-+#endif
- }
- 
- void retro_reset (void)
+         var.key = CORE_NAME "-parallel-rdp-overscan";
+         var.value = NULL;
 diff --git a/libretro/libretro_core_options.h b/libretro/libretro_core_options.h
-index fb39aa9..204e7fe 100644
+index fb39aa9..f731e17 100644
 --- a/libretro/libretro_core_options.h
 +++ b/libretro/libretro_core_options.h
-@@ -527,6 +527,9 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+@@ -81,7 +81,11 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+             {"gliden64", "GLideN64"},
+             { NULL, NULL },
+         },
++#if defined(__SWITCH2__) && defined(HAVE_PARALLEL_RDP)
++        "parallel" /* Switch 2: Vulkan is the default video driver */
++#else
+         "gliden64"
++#endif
+     },
+     {
+         CORE_NAME "-43screensize",
+@@ -527,6 +531,9 @@ struct retro_core_option_v2_definition option_defs_us[] = {
          },
          "False"
      },
@@ -644,20 +649,31 @@ index fb39aa9..204e7fe 100644
      {
          CORE_NAME "-EnableShadersStorage",
          "Cache GPU Shaders",
+@@ -1034,7 +1041,12 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+             { "True", "Enabled" },
+             { "False", "Disabled" },
+             { NULL, NULL },
+-        }
++        },
++#if defined(__SWITCH2__)
++        "False" /* waiting on the GPU every frame drops audio */
++#else
++        "True"
++#endif
+     },
+     {
+         CORE_NAME "-parallel-rdp-overscan",
 diff --git a/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c b/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
-index 98dea54..0eb1edb 100644
+index 98dea54..e9cfe45 100644
 --- a/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
 +++ b/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
-@@ -261,8 +261,44 @@ static uintptr_t jump_table_symbols[] = {
+@@ -261,8 +261,29 @@ static uintptr_t jump_table_symbols[] = {
    (intptr_t)breakpoint
  };
  
 +#if defined(__SWITCH2__)
 +extern Jit sw2_n64_jit;
 +extern int sw2_n64_jit_ready;
-+extern void sw2_trace(const char *msg);
-+extern unsigned sw2_n64_pub_calls, sw2_n64_pub_fail;
-+extern unsigned long long sw2_n64_pub_bytes, sw2_n64_pub_ticks, sw2_n64_pub_max;
 +#endif
  static void cache_flush(char* start, char* end)
  {
@@ -673,27 +689,15 @@ index 98dea54..0eb1edb 100644
 +        if (e > rx + sw2_n64_jit.size) e = rx + sw2_n64_jit.size;
 +        if (e <= s) return;
 +        OuncehenJitRange r = { (u64)(s - rx), (u64)(e - s) };
-+        const u64 t0 = armGetSystemTick();
-+        Result rc = ouncehenJitPublishRanges(&sw2_n64_jit, &r, 1);
-+        const u64 dt = armGetSystemTick() - t0;
-+        sw2_n64_pub_calls++;
-+        sw2_n64_pub_bytes += r.size;
-+        sw2_n64_pub_ticks += dt;
-+        if (dt > sw2_n64_pub_max) sw2_n64_pub_max = dt;
-+        if (R_FAILED(rc)) {
-+            char m[128];
-+            snprintf(m, sizeof(m), "n64: publish FAILED rc=%x off=%llx size=%llx", (unsigned)rc,
-+                     (unsigned long long)r.offset, (unsigned long long)r.size);
-+            sw2_trace(m);
-+            if (sw2_n64_pub_fail++ == 0) abort();
-+        }
++        if (R_FAILED(ouncehenJitPublishRanges(&sw2_n64_jit, &r, 1)))
++            abort();
 +        return;
 +    }
 +#endif
  #ifndef WIN32
      // Don't rely on GCC's __clear_cache implementation, as it caches
      // icache/dcache cache line sizes, that can vary between cores on
-@@ -4666,5 +4702,9 @@ static void arch_init(void) {
+@@ -4666,5 +4687,9 @@ static void arch_init(void) {
      ptr3+=2;
    }
  
@@ -704,10 +708,10 @@ index 98dea54..0eb1edb 100644
 +#endif
  }
 diff --git a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
-index 1e8f261..c7323b9 100644
+index 1e8f261..97d2c4b 100644
 --- a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
 +++ b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
-@@ -56,7 +56,21 @@
+@@ -56,7 +56,14 @@
  #include "device/rcp/rsp/rsp_core.h"
  
  #if !defined(WIN32)
@@ -715,42 +719,15 @@ index 1e8f261..c7323b9 100644
 +#if defined(__SWITCH2__)
 +#include <switch.h>
 +#include <ouncehen.h>
-+#include <stdio.h>
 +/* Switch 2: code is written to the staging (rw) view and made runnable by
 +   publishing it to the rx view; see cache_flush() in arm64/assem_arm64.c */
 +Jit sw2_n64_jit;
 +int sw2_n64_jit_ready;
-+static u64 sw2_thread_ticks(void);
-+/* per frame: blocks compiled and their time, invalidate_block() calls,
-+   blocks reused from the dirty list after verifying their source */
-+extern unsigned sw2_f_blocks, sw2_f_inv, sw2_f_dirty, sw2_f_insns;
-+extern unsigned long long sw2_f_block_ticks;
-+extern void sw2_trace(const char *msg);
 +#elif !defined(HAVE_LIBNX)
  #include <sys/mman.h>
  #else
  #include "../../../../../switch/mman.h"
-@@ -2638,6 +2652,9 @@ void *dynamic_linker(void * src, u_int vaddr)
- 
-   head=get_dirty(r4300,vaddr,~0);
-   if(head!=NULL){
-+#if defined(__SWITCH2__)
-+    sw2_f_dirty++;
-+#endif
-     if(ht_bin[0]&&ht_bin[0]->vaddr==vaddr) {
-       ht_bin[0]=head; // Replace existing entry
-     }
-@@ -2882,6 +2899,9 @@ static void invalidate_page(u_int page)
- 
- void invalidate_block(u_int block)
- {
-+#if defined(__SWITCH2__)
-+  sw2_f_inv++;
-+#endif
-   u_int page;
-   page=block^0x80000;
-   if(block<0x100000&&page>262143&&g_dev.r4300.cp0.tlb.LUT_r[block]) page=(g_dev.r4300.cp0.tlb.LUT_r[block]^0x80000000)>>12;
-@@ -8703,12 +8723,15 @@ static void pagespan_ds(void)
+@@ -8703,7 +8710,7 @@ static void pagespan_ds(void)
  }
  
  /**** Recompiler ****/
@@ -759,91 +736,36 @@ index 1e8f261..c7323b9 100644
  ALIGN(4096, char jit_memory[33554432]) __attribute__((section(".text")));
  #endif
  void new_dynarec_init(void)
- {
-   DebugMessage(M64MSG_INFO, "Init new dynarec");
-+#if defined(__SWITCH2__)
-+  sw2_trace("n64: new_dynarec_init");
-+#endif
-   ensure_dynarec_cache_alignment();
- 
- #if defined(RECOMPILER_DEBUG) && !defined(RECOMP_DBG)
-@@ -8730,7 +8753,24 @@ void new_dynarec_init(void)
+@@ -8730,7 +8737,14 @@ void new_dynarec_init(void)
  #endif
  
  #if CACHE_ADDR==DOUBLE_CACHE_ADDR
 -#ifdef HAVE_LIBNX
 +#if defined(__SWITCH2__)
-+  {
-+    char m[160];
-+    Result rc = jitCreate(&sw2_n64_jit, 1<<TARGET_SIZE_2);
-+    snprintf(m, sizeof(m), "n64: jitCreate rc=%x type=%d rw=%p rx=%p exec=%d", (unsigned)rc, (int)sw2_n64_jit.type,
-+             jitGetRwAddr(&sw2_n64_jit), jitGetRxAddr(&sw2_n64_jit), (int)sw2_n64_jit.is_executable);
-+    sw2_trace(m);
-+    if (R_FAILED(rc)) abort();
-+    if (sw2_n64_jit.is_executable) {
-+      rc = jitTransitionToWritable(&sw2_n64_jit);
-+      snprintf(m, sizeof(m), "n64: to_writable rc=%x", (unsigned)rc);
-+      sw2_trace(m);
-+    }
-+    base_addr = jitGetRwAddr(&sw2_n64_jit);
-+    base_addr_rx = jitGetRxAddr(&sw2_n64_jit);
-+    sw2_n64_jit_ready = 1;
-+  }
++  if (R_FAILED(jitCreate(&sw2_n64_jit, 1<<TARGET_SIZE_2))) abort();
++  if (sw2_n64_jit.is_executable)
++    jitTransitionToWritable(&sw2_n64_jit);
++  base_addr = jitGetRwAddr(&sw2_n64_jit);
++  base_addr_rx = jitGetRxAddr(&sw2_n64_jit);
++  sw2_n64_jit_ready = 1;
 +#elif defined(HAVE_LIBNX)
    base_addr = mmap((u_char *)jit_memory, 1<<TARGET_SIZE_2, 0,0,0,0);
    base_addr_rx = (void*)jit_memory;
  #else
-@@ -8810,7 +8850,34 @@ void new_dynarec_init(void)
+@@ -8810,7 +8824,11 @@ void new_dynarec_init(void)
    // Copy this into local area so we don't have to put it in every literal pool
    g_dev.r4300.new_dynarec_hot_state.invc_ptr=g_dev.r4300.cached_interp.invalid_code;
  #endif
 -#ifdef HAVE_LIBNX
 +#if defined(__SWITCH2__)
-+  /* Blocks end at a jal, as on other platforms. The Switch 1 build
-+     compiled on past it (speculative precompilation), which made blocks
-+     of up to MAXBLOCK/2 instructions whose compile took up to 17 ms;
-+     /retroarch-n64-jal0.on brings that back for comparison. */
-+  {
-+    FILE *f = fopen("/retroarch-n64-jal0.on", "rb");
-+    stop_after_jal = f ? 0 : 1;
-+    if (f) fclose(f);
-+    sw2_trace(stop_after_jal ? "n64: stop_after_jal=1" : "n64: stop_after_jal=0 (flag)");
-+    {
-+      volatile unsigned acc = 1;
-+      unsigned i;
-+      char m[160];
-+      const u64 c0 = sw2_thread_ticks();
-+      const u64 t0 = armGetSystemTick();
-+      for (i = 0; i < 20000000u; i++)
-+        acc = acc * 1664525u + 1013904223u;
-+      const u64 dt = armGetSystemTick() - t0;
-+      const u64 dc = sw2_thread_ticks() - c0;
-+      snprintf(m, sizeof(m), "n64cpu: calib 20M iters wall=%lluus cpu=%lluus core=%d",
-+               (unsigned long long)(dt * 1000000ull / armGetSystemTickFreq()),
-+               (unsigned long long)(dc * 1000000ull / armGetSystemTickFreq()),
-+               (int)svcGetCurrentProcessorNumber());
-+      sw2_trace(m);
-+    }
-+  }
++  /* Blocks end at a jal, as on other platforms: compiling past it made
++     blocks whose compile took up to 17 ms */
++  stop_after_jal=1;
 +#elif defined(HAVE_LIBNX)
    stop_after_jal=0;
  #else
    stop_after_jal=1;
-@@ -8825,7 +8892,13 @@ void new_dynarec_init(void)
-     g_dev.r4300.new_dynarec_hot_state.memory_map[n]=(uintptr_t)-1;
- 
-   tlb_speed_hacks();
-+#if defined(__SWITCH2__)
-+  sw2_trace("n64: arch_init");
-+#endif
-   arch_init();
-+#if defined(__SWITCH2__)
-+  sw2_trace("n64: arch_init done");
-+#endif
- }
- 
- void new_dynarec_cleanup(void)
-@@ -8842,6 +8915,9 @@ void new_dynarec_cleanup(void)
+@@ -8842,6 +8860,9 @@ void new_dynarec_cleanup(void)
  #if !defined(RECOMP_DBG)
    #if defined(WIN32)
      VirtualFree(base_addr, 0, MEM_RELEASE);
@@ -853,181 +775,931 @@ index 1e8f261..c7323b9 100644
    #elif NEW_DYNAREC == NEW_DYNAREC_ARM64 && CACHE_ADDR!=FIXED_CACHE_ADDR
      if (munmap (base_addr_rx, 1<<TARGET_SIZE_2) < 0) {DebugMessage(M64MSG_ERROR, "munmap() failed");}
    #else
-@@ -8853,8 +8929,49 @@ void new_dynarec_cleanup(void)
- #endif
+diff --git a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp b/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
+index 5100e60..1d9bdd0 100644
+--- a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
++++ b/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
+@@ -1,3 +1,78 @@
++#if defined(__SWITCH__)
++#include <switch.h>
++#include <ouncehen.h>
++#include <stdlib.h>
++#include "jit_allocator.hpp"
++
++// Offset from the staging view to the executable view, for Lightning's
++// aarch64 backend (pc-relative branches out of a block).
++extern "C" long jit_sw2_exec_delta;
++long jit_sw2_exec_delta;
++
++namespace RSP
++{
++namespace JIT
++{
++static constexpr size_t jit_size = 32 * 1024 * 1024;
++static Jit *current_jit;
++
++Allocator::~Allocator()
++{
++	Jit *j = static_cast<Jit *>(sw2_jit);
++	if (!j)
++		return;
++	if (current_jit == j)
++		current_jit = nullptr;
++	jitClose(j);
++	delete j;
++}
++
++void *Allocator::allocate_code(size_t size)
++{
++	Jit *j = static_cast<Jit *>(sw2_jit);
++	if (!j)
++	{
++		j = new Jit();
++		if (R_FAILED(jitCreate(j, jit_size)))
++		{
++			delete j;
++			return nullptr;
++		}
++		if (j->is_executable)
++			jitTransitionToWritable(j);
++		sw2_jit = j;
++		current_jit = j;
++		jit_sw2_exec_delta = long(uintptr_t(jitGetRxAddr(j)) - uintptr_t(jitGetRwAddr(j)));
++	}
++
++	// Cache-line granularity: nothing is page-protected here.
++	size = (size + 63) & ~size_t(63);
++	if (sw2_offset + size > jit_size)
++		return nullptr;
++	void *ret = static_cast<uint8_t *>(jitGetRwAddr(j)) + sw2_offset;
++	sw2_offset += size;
++	return ret;
++}
++
++bool Allocator::commit_code(void *code, size_t size)
++{
++	Jit *j = current_jit;
++	if (!j)
++		return false;
++	const uintptr_t off = uintptr_t(code) - uintptr_t(jitGetRwAddr(j));
++	const uintptr_t start = off & ~uintptr_t(63);
++	const uintptr_t end = (off + size + 63) & ~uintptr_t(63);
++	OuncehenJitRange range = { u64(start), u64(end - start) };
++	return R_SUCCEEDED(ouncehenJitPublishRanges(j, &range, 1));
++}
++
++void *Allocator::exec_address(void *code)
++{
++	return static_cast<uint8_t *>(code) + jit_sw2_exec_delta;
++}
++}
++}
++#else
+ #ifdef _WIN32
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
+@@ -117,3 +192,4 @@ Allocator::Block Allocator::reserve_block(size_t size)
+ }
+ }
+ }
++#endif
+diff --git a/mupen64plus-rsp-paraLLEl/jit_allocator.hpp b/mupen64plus-rsp-paraLLEl/jit_allocator.hpp
+index a7768a8..0034c11 100644
+--- a/mupen64plus-rsp-paraLLEl/jit_allocator.hpp
++++ b/mupen64plus-rsp-paraLLEl/jit_allocator.hpp
+@@ -17,6 +17,15 @@ public:
+ 
+ 	void *allocate_code(size_t size);
+ 	static bool commit_code(void *code, size_t size);
++#if defined(__SWITCH__)
++	// Code is written to a staging view and runs from an executable view.
++	static void *exec_address(void *code);
++#else
++	static void *exec_address(void *code)
++	{
++		return code;
++	}
++#endif
+ 
+ private:
+ 	struct Block
+@@ -26,6 +35,10 @@ private:
+ 		size_t offset = 0;
+ 	};
+ 	std::vector<Block> blocks;
++#if defined(__SWITCH__)
++	void *sw2_jit = nullptr;
++	size_t sw2_offset = 0;
++#endif
+ 
+ 	static Block reserve_block(size_t size);
+ };
+diff --git a/mupen64plus-rsp-paraLLEl/lightning/lib/jit_aarch64-cpu.c b/mupen64plus-rsp-paraLLEl/lightning/lib/jit_aarch64-cpu.c
+index d5e64ad..2cd0af9 100644
+--- a/mupen64plus-rsp-paraLLEl/lightning/lib/jit_aarch64-cpu.c
++++ b/mupen64plus-rsp-paraLLEl/lightning/lib/jit_aarch64-cpu.c
+@@ -2182,13 +2182,31 @@ _bmxi(jit_state_t *_jit, jit_int32_t cc,
+     return (w);
  }
  
-+#if defined(__SWITCH2__)
-+/* time in each part of new_recompile_block: [0] before pass 1, [1..10]
-+   passes 1-10; reported and cleared by libretro.c */
-+unsigned long long sw2_n64_pass[11];
-+static u64 sw2_thread_ticks(void);
-+static u64 sw2_pass_t;
-+#define SW2_PASS(k) do { u64 sw2_now = armGetSystemTick(); sw2_n64_pass[k] += sw2_now - sw2_pass_t; sw2_pass_t = sw2_now; } while (0)
-+extern unsigned sw2_n64_blocks, sw2_n64_block_insns, sw2_n64_block_insn_max;
-+extern unsigned long long sw2_n64_block_ticks, sw2_n64_block_max;
-+static int new_recompile_block_impl(int addr);
-+unsigned long long sw2_n64_block_cpu;
-+static u64 sw2_thread_ticks(void)
++#if defined(__SWITCH__)
++extern long jit_sw2_exec_delta;
++/* Code is written to a staging view and runs from an executable view at a
++ * fixed offset: a pc-relative branch to a target outside this buffer is
++ * computed from where the code will run. */
++static jit_word_t
++_sw2_branch_base(jit_state_t *_jit, jit_word_t i0)
 +{
-+  u64 v = 0;
-+  svcGetInfo(&v, InfoType_ThreadTickCount, CUR_THREAD_HANDLE, TickCountInfo_Total);
-+  return v;
++    jit_word_t		start = (jit_word_t)_jit->code.ptr;
++    if (i0 >= start && i0 < start + (jit_word_t)_jit->code.length)
++	return (_jit->pc.w);
++    return (_jit->pc.w + jit_sw2_exec_delta);
 +}
- int new_recompile_block(int addr)
- {
-+  const u64 c0 = sw2_thread_ticks();
-+  const u64 t0 = armGetSystemTick();
-+  int r = new_recompile_block_impl(addr);
-+  const u64 dt = armGetSystemTick() - t0;
-+  sw2_n64_block_cpu += sw2_thread_ticks() - c0;
-+  sw2_f_blocks++;
-+  sw2_f_insns += (unsigned)slen;
-+  sw2_f_block_ticks += dt;
-+  sw2_n64_blocks++;
-+  sw2_n64_block_insns += (unsigned)slen;
-+  if ((unsigned)slen > sw2_n64_block_insn_max) sw2_n64_block_insn_max = (unsigned)slen;
-+  sw2_n64_block_ticks += dt;
-+  if (dt > sw2_n64_block_max) sw2_n64_block_max = dt;
-+  return r;
-+}
-+static int new_recompile_block_impl(int addr)
++#  define sw2_branch_base(i0)		_sw2_branch_base(_jit, i0)
 +#else
-+int new_recompile_block(int addr)
-+#define SW2_PASS(k)
++#  define sw2_branch_base(i0)		(_jit->pc.w)
 +#endif
-+{
-+#if defined(__SWITCH2__)
-+  sw2_pass_t = armGetSystemTick();
++
+ static jit_word_t
+ _jmpi(jit_state_t *_jit, jit_word_t i0)
+ {
+     jit_int32_t		reg;
+     jit_word_t		d, w;
+     w = _jit->pc.w;
+-    d = (i0 - w) >> 2;
++    d = (i0 - sw2_branch_base(i0)) >> 2;
+     if (s26_p(d))
+ 	B(d);
+     else {
+@@ -2218,7 +2236,7 @@ _calli(jit_state_t *_jit, jit_word_t i0)
+     jit_int32_t		reg;
+     jit_word_t		d, w;
+     w = _jit->pc.w;
+-    d = (i0 - w) >> 2;
++    d = (i0 - sw2_branch_base(i0)) >> 2;
+     if (s26_p(d))
+ 	BL(d);
+     else {
+@@ -2502,6 +2520,12 @@ _patch_at(jit_state_t *_jit, jit_word_t instr, jit_word_t label)
+ 	u.i[0] = i.w;
+     }
+     else if (ffc == (A64_MOVZ|XS)) {
++#if defined(__SWITCH__)
++	/* an absolute address inside this buffer runs from the executable view */
++	if (label >= (jit_word_t)_jit->code.ptr &&
++	    label < (jit_word_t)_jit->code.ptr + (jit_word_t)_jit->code.length)
++	    label += jit_sw2_exec_delta;
 +#endif
- #if defined(RECOMPILER_DEBUG) && !defined(RECOMP_DBG)
-   recomp_dbg_block(addr);
+ 	i.imm16.b = label;
+ 	u.i[0] = i.w;
+ 	i.w = u.i[1];
+diff --git a/mupen64plus-rsp-paraLLEl/lightning/lib/jit_aarch64.c b/mupen64plus-rsp-paraLLEl/lightning/lib/jit_aarch64.c
+index 243e677..33fccbd 100644
+--- a/mupen64plus-rsp-paraLLEl/lightning/lib/jit_aarch64.c
++++ b/mupen64plus-rsp-paraLLEl/lightning/lib/jit_aarch64.c
+@@ -1975,7 +1975,11 @@ _emit_code(jit_state_t *_jit)
+ void
+ jit_flush(void *fptr, void *tptr)
+ {
+-#if defined(__GNUC__)
++#if defined(__SWITCH__)
++    /* published to the executable view by the caller */
++    (void)fptr;
++    (void)tptr;
++#elif defined(__GNUC__)
+     jit_word_t		f, t, s;
+ 
+     s = sysconf(_SC_PAGE_SIZE);
+diff --git a/mupen64plus-rsp-paraLLEl/rsp_jit.cpp b/mupen64plus-rsp-paraLLEl/rsp_jit.cpp
+index 2052404..fd73b85 100644
+--- a/mupen64plus-rsp-paraLLEl/rsp_jit.cpp
++++ b/mupen64plus-rsp-paraLLEl/rsp_jit.cpp
+@@ -430,10 +430,14 @@ void CPU::init_jit_thunks()
+ 	if (!thunk_code)
+ 		abort();
+ 	jit_set_code(thunk_code, code_size);
++#if defined(__SWITCH__)
++	// no mmap for a data buffer; no constants or notes are needed
++	jit_set_data(nullptr, 0, JIT_DISABLE_DATA | JIT_DISABLE_NOTE);
++#endif
+ 
+-	thunks.enter_frame = reinterpret_cast<int (*)(void *)>(jit_emit());
+-	thunks.enter_thunk = jit_address(entry_label);
+-	thunks.return_thunk = jit_address(return_label);
++	thunks.enter_frame = reinterpret_cast<int (*)(void *)>(Allocator::exec_address(jit_emit()));
++	thunks.enter_thunk = Allocator::exec_address(jit_address(entry_label));
++	thunks.return_thunk = Allocator::exec_address(jit_address(return_label));
+ 
+ 	//printf(" === DISASM ===\n");
+ 	//jit_disassemble();
+@@ -1900,8 +1904,12 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
+ 	if (!block_code)
+ 		abort();
+ 	jit_set_code(block_code, code_size);
++#if defined(__SWITCH__)
++	// no mmap for a data buffer; no constants or notes are needed
++	jit_set_data(nullptr, 0, JIT_DISABLE_DATA | JIT_DISABLE_NOTE);
++#endif
+ 
+-	auto ret = reinterpret_cast<Func>(jit_emit());
++	auto ret = reinterpret_cast<Func>(Allocator::exec_address(jit_emit()));
+ 
+ #ifdef TRACE_DISASM
+ 	printf(" === DISASM ===\n");
+diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/util/timer.cpp b/mupen64plus-video-paraLLEl/parallel-rdp/util/timer.cpp
+index d6b0c9f..72b7fea 100644
+--- a/mupen64plus-video-paraLLEl/parallel-rdp/util/timer.cpp
++++ b/mupen64plus-video-paraLLEl/parallel-rdp/util/timer.cpp
+@@ -107,7 +107,7 @@ int64_t get_current_time_nsecs()
+ 	return int64_t(double(li.QuadPart) * static_qpc_freq.inv_freq);
+ #else
+ 	struct timespec ts = {};
+-#ifdef ANDROID
++#if defined(ANDROID) || defined(__SWITCH__)
+ 	constexpr auto timebase = CLOCK_MONOTONIC;
+ #else
+ 	constexpr auto timebase = CLOCK_MONOTONIC_RAW;
+diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/volk/volk.c b/mupen64plus-video-paraLLEl/parallel-rdp/volk/volk.c
+index db3baab..1b93e07 100644
+--- a/mupen64plus-video-paraLLEl/parallel-rdp/volk/volk.c
++++ b/mupen64plus-video-paraLLEl/parallel-rdp/volk/volk.c
+@@ -11,7 +11,7 @@
+ 	#else
+ 		typedef int (__stdcall* FARPROC)(void);
+ 	#endif
+-#else
++#elif !defined(__SWITCH__)
+ #	include <dlfcn.h>
  #endif
-@@ -8925,6 +9042,7 @@ int new_recompile_block(int addr)
-   //DebugMessage(M64MSG_VERBOSE, "addr = %x source = %x %x", addr,source,source[0]);
  
-   /* Pass 1 disassembly */
-+  SW2_PASS(0);
+@@ -51,6 +51,8 @@ VkResult volkInitialize(void)
  
-   for(i=0;!done;i++) {
-     bt[i]=0;likely[i]=0;ooo[i]=0;op2=0;
-@@ -9464,10 +9582,12 @@ int new_recompile_block(int addr)
-   assert(slen>0);
- 
-   /* Pass 2 - Register dependencies and branch targets */
-+  SW2_PASS(1);
- 
-   unneeded_registers(0,slen-1,0);
- 
-   /* Pass 3 - Register allocation */
-+  SW2_PASS(2);
- 
-   struct regstat current; // Current register allocations/status
-   current.is32=1;
-@@ -10456,6 +10576,7 @@ int new_recompile_block(int addr)
-   }
- 
-   /* Pass 4 - Cull unused host registers */
-+  SW2_PASS(3);
- 
-   uint64_t nr=0LL;
- 
-@@ -10730,6 +10851,7 @@ int new_recompile_block(int addr)
-   }
- 
-   /* Pass 5 - Pre-allocate registers */
-+  SW2_PASS(4);
- 
-   // If a register is allocated during a loop, try to allocate it for the
-   // entire loop, if possible.  This avoids loading/storing registers
-@@ -11454,9 +11576,11 @@ int new_recompile_block(int addr)
-   }
- 
-   /* Pass 6 - Optimize clean/dirty state */
-+  SW2_PASS(5);
-   clean_registers(0,slen-1,1);
- 
-   /* Pass 7 - Identify 32-bit registers */
-+  SW2_PASS(6);
- 
-   provisional_r32();
- 
-@@ -11577,6 +11701,7 @@ int new_recompile_block(int addr)
-   }
- 
-   /* Pass 8 - Assembly */
-+  SW2_PASS(7);
-   linkcount=0;stubcount=0;
-   ds=0;is_delayslot=0;
-   cop1_usable=0;
-@@ -11800,6 +11925,7 @@ int new_recompile_block(int addr)
-   }
- 
-   /* Pass 9 - Linker */
-+  SW2_PASS(8);
-   for(i=0;i<linkcount;i++)
-   {
-     assem_debug("%8x -> %8x",link_addr[i][0],link_addr[i][1]);
-@@ -11933,6 +12059,7 @@ int new_recompile_block(int addr)
-   }
- 
-   /* Pass 10 - Free memory by expiring oldest blocks */
-+  SW2_PASS(9);
- 
-   int end=((((intptr_t)out-(intptr_t)base_addr)>>(TARGET_SIZE_2-16))+16384)&65535;
-   while(expirep!=end)
-@@ -11983,5 +12110,6 @@ int new_recompile_block(int addr)
-     }
-     expirep=(expirep+1)&65535;
-   }
-+  SW2_PASS(10);
-   return 0;
- }
-diff --git a/mupen64plus-core/src/main/main.c b/mupen64plus-core/src/main/main.c
-index 620f4ce..dd05655 100644
---- a/mupen64plus-core/src/main/main.c
-+++ b/mupen64plus-core/src/main/main.c
-@@ -1363,8 +1363,15 @@ extern audio_plugin_functions dummy_audio;
- unsigned int r4300_emumode;
- size_t rdram_size;
- 
-+#if defined(__SWITCH2__)
-+extern void sw2_trace(const char *msg);
-+#define SW2T(s) sw2_trace(s)
-+#else
-+#define SW2T(s)
+ 	// note: function pointer is cast through void function pointer to silence cast-function-type warning on gcc8
+ 	vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)(void(*)(void))GetProcAddress(module, "vkGetInstanceProcAddr");
++#elif defined(__SWITCH__)
++	return VK_ERROR_INITIALIZATION_FAILED;
+ #elif defined(__APPLE__)
+ 	void* module = dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
+ 	if (!module)
+diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/volk/volk_sw2_rename.h b/mupen64plus-video-paraLLEl/parallel-rdp/volk/volk_sw2_rename.h
+new file mode 100644
+index 0000000..1dc0c5c
+--- /dev/null
++++ b/mupen64plus-video-paraLLEl/parallel-rdp/volk/volk_sw2_rename.h
+@@ -0,0 +1,627 @@
++/* Switch 2: libounce links the real Vulkan entry points into the frontend,
++   so volk's function pointers are renamed to keep the two apart. */
++#ifndef VOLK_SW2_RENAME_H
++#define VOLK_SW2_RENAME_H
++#define vkAcquireDrmDisplayEXT sw2prdp_vkAcquireDrmDisplayEXT
++#define vkAcquireFullScreenExclusiveModeEXT sw2prdp_vkAcquireFullScreenExclusiveModeEXT
++#define vkAcquireNextImage2KHR sw2prdp_vkAcquireNextImage2KHR
++#define vkAcquireNextImageKHR sw2prdp_vkAcquireNextImageKHR
++#define vkAcquirePerformanceConfigurationINTEL sw2prdp_vkAcquirePerformanceConfigurationINTEL
++#define vkAcquireProfilingLockKHR sw2prdp_vkAcquireProfilingLockKHR
++#define vkAcquireWinrtDisplayNV sw2prdp_vkAcquireWinrtDisplayNV
++#define vkAcquireXlibDisplayEXT sw2prdp_vkAcquireXlibDisplayEXT
++#define vkAllocateCommandBuffers sw2prdp_vkAllocateCommandBuffers
++#define vkAllocateDescriptorSets sw2prdp_vkAllocateDescriptorSets
++#define vkAllocateMemory sw2prdp_vkAllocateMemory
++#define vkBeginCommandBuffer sw2prdp_vkBeginCommandBuffer
++#define vkBindAccelerationStructureMemoryNV sw2prdp_vkBindAccelerationStructureMemoryNV
++#define vkBindBufferMemory sw2prdp_vkBindBufferMemory
++#define vkBindBufferMemory2 sw2prdp_vkBindBufferMemory2
++#define vkBindBufferMemory2KHR sw2prdp_vkBindBufferMemory2KHR
++#define vkBindImageMemory sw2prdp_vkBindImageMemory
++#define vkBindImageMemory2 sw2prdp_vkBindImageMemory2
++#define vkBindImageMemory2KHR sw2prdp_vkBindImageMemory2KHR
++#define vkBindOpticalFlowSessionImageNV sw2prdp_vkBindOpticalFlowSessionImageNV
++#define vkBindVideoSessionMemoryKHR sw2prdp_vkBindVideoSessionMemoryKHR
++#define vkBuildAccelerationStructuresKHR sw2prdp_vkBuildAccelerationStructuresKHR
++#define vkBuildMicromapsEXT sw2prdp_vkBuildMicromapsEXT
++#define vkCmdBeginConditionalRenderingEXT sw2prdp_vkCmdBeginConditionalRenderingEXT
++#define vkCmdBeginDebugUtilsLabelEXT sw2prdp_vkCmdBeginDebugUtilsLabelEXT
++#define vkCmdBeginQuery sw2prdp_vkCmdBeginQuery
++#define vkCmdBeginQueryIndexedEXT sw2prdp_vkCmdBeginQueryIndexedEXT
++#define vkCmdBeginRenderPass sw2prdp_vkCmdBeginRenderPass
++#define vkCmdBeginRenderPass2 sw2prdp_vkCmdBeginRenderPass2
++#define vkCmdBeginRenderPass2KHR sw2prdp_vkCmdBeginRenderPass2KHR
++#define vkCmdBeginRendering sw2prdp_vkCmdBeginRendering
++#define vkCmdBeginRenderingKHR sw2prdp_vkCmdBeginRenderingKHR
++#define vkCmdBeginTransformFeedbackEXT sw2prdp_vkCmdBeginTransformFeedbackEXT
++#define vkCmdBeginVideoCodingKHR sw2prdp_vkCmdBeginVideoCodingKHR
++#define vkCmdBindDescriptorBufferEmbeddedSamplersEXT sw2prdp_vkCmdBindDescriptorBufferEmbeddedSamplersEXT
++#define vkCmdBindDescriptorBuffersEXT sw2prdp_vkCmdBindDescriptorBuffersEXT
++#define vkCmdBindDescriptorSets sw2prdp_vkCmdBindDescriptorSets
++#define vkCmdBindIndexBuffer sw2prdp_vkCmdBindIndexBuffer
++#define vkCmdBindInvocationMaskHUAWEI sw2prdp_vkCmdBindInvocationMaskHUAWEI
++#define vkCmdBindPipeline sw2prdp_vkCmdBindPipeline
++#define vkCmdBindPipelineShaderGroupNV sw2prdp_vkCmdBindPipelineShaderGroupNV
++#define vkCmdBindShadingRateImageNV sw2prdp_vkCmdBindShadingRateImageNV
++#define vkCmdBindTransformFeedbackBuffersEXT sw2prdp_vkCmdBindTransformFeedbackBuffersEXT
++#define vkCmdBindVertexBuffers sw2prdp_vkCmdBindVertexBuffers
++#define vkCmdBindVertexBuffers2 sw2prdp_vkCmdBindVertexBuffers2
++#define vkCmdBindVertexBuffers2EXT sw2prdp_vkCmdBindVertexBuffers2EXT
++#define vkCmdBlitImage sw2prdp_vkCmdBlitImage
++#define vkCmdBlitImage2 sw2prdp_vkCmdBlitImage2
++#define vkCmdBlitImage2KHR sw2prdp_vkCmdBlitImage2KHR
++#define vkCmdBuildAccelerationStructureNV sw2prdp_vkCmdBuildAccelerationStructureNV
++#define vkCmdBuildAccelerationStructuresIndirectKHR sw2prdp_vkCmdBuildAccelerationStructuresIndirectKHR
++#define vkCmdBuildAccelerationStructuresKHR sw2prdp_vkCmdBuildAccelerationStructuresKHR
++#define vkCmdBuildMicromapsEXT sw2prdp_vkCmdBuildMicromapsEXT
++#define vkCmdClearAttachments sw2prdp_vkCmdClearAttachments
++#define vkCmdClearColorImage sw2prdp_vkCmdClearColorImage
++#define vkCmdClearDepthStencilImage sw2prdp_vkCmdClearDepthStencilImage
++#define vkCmdControlVideoCodingKHR sw2prdp_vkCmdControlVideoCodingKHR
++#define vkCmdCopyAccelerationStructureKHR sw2prdp_vkCmdCopyAccelerationStructureKHR
++#define vkCmdCopyAccelerationStructureNV sw2prdp_vkCmdCopyAccelerationStructureNV
++#define vkCmdCopyAccelerationStructureToMemoryKHR sw2prdp_vkCmdCopyAccelerationStructureToMemoryKHR
++#define vkCmdCopyBuffer sw2prdp_vkCmdCopyBuffer
++#define vkCmdCopyBuffer2 sw2prdp_vkCmdCopyBuffer2
++#define vkCmdCopyBuffer2KHR sw2prdp_vkCmdCopyBuffer2KHR
++#define vkCmdCopyBufferToImage sw2prdp_vkCmdCopyBufferToImage
++#define vkCmdCopyBufferToImage2 sw2prdp_vkCmdCopyBufferToImage2
++#define vkCmdCopyBufferToImage2KHR sw2prdp_vkCmdCopyBufferToImage2KHR
++#define vkCmdCopyImage sw2prdp_vkCmdCopyImage
++#define vkCmdCopyImage2 sw2prdp_vkCmdCopyImage2
++#define vkCmdCopyImage2KHR sw2prdp_vkCmdCopyImage2KHR
++#define vkCmdCopyImageToBuffer sw2prdp_vkCmdCopyImageToBuffer
++#define vkCmdCopyImageToBuffer2 sw2prdp_vkCmdCopyImageToBuffer2
++#define vkCmdCopyImageToBuffer2KHR sw2prdp_vkCmdCopyImageToBuffer2KHR
++#define vkCmdCopyMemoryIndirectNV sw2prdp_vkCmdCopyMemoryIndirectNV
++#define vkCmdCopyMemoryToAccelerationStructureKHR sw2prdp_vkCmdCopyMemoryToAccelerationStructureKHR
++#define vkCmdCopyMemoryToImageIndirectNV sw2prdp_vkCmdCopyMemoryToImageIndirectNV
++#define vkCmdCopyMemoryToMicromapEXT sw2prdp_vkCmdCopyMemoryToMicromapEXT
++#define vkCmdCopyMicromapEXT sw2prdp_vkCmdCopyMicromapEXT
++#define vkCmdCopyMicromapToMemoryEXT sw2prdp_vkCmdCopyMicromapToMemoryEXT
++#define vkCmdCopyQueryPoolResults sw2prdp_vkCmdCopyQueryPoolResults
++#define vkCmdCuLaunchKernelNVX sw2prdp_vkCmdCuLaunchKernelNVX
++#define vkCmdDebugMarkerBeginEXT sw2prdp_vkCmdDebugMarkerBeginEXT
++#define vkCmdDebugMarkerEndEXT sw2prdp_vkCmdDebugMarkerEndEXT
++#define vkCmdDebugMarkerInsertEXT sw2prdp_vkCmdDebugMarkerInsertEXT
++#define vkCmdDecodeVideoKHR sw2prdp_vkCmdDecodeVideoKHR
++#define vkCmdDecompressMemoryIndirectCountNV sw2prdp_vkCmdDecompressMemoryIndirectCountNV
++#define vkCmdDecompressMemoryNV sw2prdp_vkCmdDecompressMemoryNV
++#define vkCmdDispatch sw2prdp_vkCmdDispatch
++#define vkCmdDispatchBase sw2prdp_vkCmdDispatchBase
++#define vkCmdDispatchBaseKHR sw2prdp_vkCmdDispatchBaseKHR
++#define vkCmdDispatchIndirect sw2prdp_vkCmdDispatchIndirect
++#define vkCmdDraw sw2prdp_vkCmdDraw
++#define vkCmdDrawIndexed sw2prdp_vkCmdDrawIndexed
++#define vkCmdDrawIndexedIndirect sw2prdp_vkCmdDrawIndexedIndirect
++#define vkCmdDrawIndexedIndirectCount sw2prdp_vkCmdDrawIndexedIndirectCount
++#define vkCmdDrawIndexedIndirectCountAMD sw2prdp_vkCmdDrawIndexedIndirectCountAMD
++#define vkCmdDrawIndexedIndirectCountKHR sw2prdp_vkCmdDrawIndexedIndirectCountKHR
++#define vkCmdDrawIndirect sw2prdp_vkCmdDrawIndirect
++#define vkCmdDrawIndirectByteCountEXT sw2prdp_vkCmdDrawIndirectByteCountEXT
++#define vkCmdDrawIndirectCount sw2prdp_vkCmdDrawIndirectCount
++#define vkCmdDrawIndirectCountAMD sw2prdp_vkCmdDrawIndirectCountAMD
++#define vkCmdDrawIndirectCountKHR sw2prdp_vkCmdDrawIndirectCountKHR
++#define vkCmdDrawMeshTasksEXT sw2prdp_vkCmdDrawMeshTasksEXT
++#define vkCmdDrawMeshTasksIndirectCountEXT sw2prdp_vkCmdDrawMeshTasksIndirectCountEXT
++#define vkCmdDrawMeshTasksIndirectCountNV sw2prdp_vkCmdDrawMeshTasksIndirectCountNV
++#define vkCmdDrawMeshTasksIndirectEXT sw2prdp_vkCmdDrawMeshTasksIndirectEXT
++#define vkCmdDrawMeshTasksIndirectNV sw2prdp_vkCmdDrawMeshTasksIndirectNV
++#define vkCmdDrawMeshTasksNV sw2prdp_vkCmdDrawMeshTasksNV
++#define vkCmdDrawMultiEXT sw2prdp_vkCmdDrawMultiEXT
++#define vkCmdDrawMultiIndexedEXT sw2prdp_vkCmdDrawMultiIndexedEXT
++#define vkCmdEncodeVideoKHR sw2prdp_vkCmdEncodeVideoKHR
++#define vkCmdEndConditionalRenderingEXT sw2prdp_vkCmdEndConditionalRenderingEXT
++#define vkCmdEndDebugUtilsLabelEXT sw2prdp_vkCmdEndDebugUtilsLabelEXT
++#define vkCmdEndQuery sw2prdp_vkCmdEndQuery
++#define vkCmdEndQueryIndexedEXT sw2prdp_vkCmdEndQueryIndexedEXT
++#define vkCmdEndRenderPass sw2prdp_vkCmdEndRenderPass
++#define vkCmdEndRenderPass2 sw2prdp_vkCmdEndRenderPass2
++#define vkCmdEndRenderPass2KHR sw2prdp_vkCmdEndRenderPass2KHR
++#define vkCmdEndRendering sw2prdp_vkCmdEndRendering
++#define vkCmdEndRenderingKHR sw2prdp_vkCmdEndRenderingKHR
++#define vkCmdEndTransformFeedbackEXT sw2prdp_vkCmdEndTransformFeedbackEXT
++#define vkCmdEndVideoCodingKHR sw2prdp_vkCmdEndVideoCodingKHR
++#define vkCmdExecuteCommands sw2prdp_vkCmdExecuteCommands
++#define vkCmdExecuteGeneratedCommandsNV sw2prdp_vkCmdExecuteGeneratedCommandsNV
++#define vkCmdFillBuffer sw2prdp_vkCmdFillBuffer
++#define vkCmdInsertDebugUtilsLabelEXT sw2prdp_vkCmdInsertDebugUtilsLabelEXT
++#define vkCmdNextSubpass sw2prdp_vkCmdNextSubpass
++#define vkCmdNextSubpass2 sw2prdp_vkCmdNextSubpass2
++#define vkCmdNextSubpass2KHR sw2prdp_vkCmdNextSubpass2KHR
++#define vkCmdOpticalFlowExecuteNV sw2prdp_vkCmdOpticalFlowExecuteNV
++#define vkCmdPipelineBarrier sw2prdp_vkCmdPipelineBarrier
++#define vkCmdPipelineBarrier2 sw2prdp_vkCmdPipelineBarrier2
++#define vkCmdPipelineBarrier2KHR sw2prdp_vkCmdPipelineBarrier2KHR
++#define vkCmdPreprocessGeneratedCommandsNV sw2prdp_vkCmdPreprocessGeneratedCommandsNV
++#define vkCmdPushConstants sw2prdp_vkCmdPushConstants
++#define vkCmdPushDescriptorSetKHR sw2prdp_vkCmdPushDescriptorSetKHR
++#define vkCmdPushDescriptorSetWithTemplateKHR sw2prdp_vkCmdPushDescriptorSetWithTemplateKHR
++#define vkCmdResetEvent sw2prdp_vkCmdResetEvent
++#define vkCmdResetEvent2 sw2prdp_vkCmdResetEvent2
++#define vkCmdResetEvent2KHR sw2prdp_vkCmdResetEvent2KHR
++#define vkCmdResetQueryPool sw2prdp_vkCmdResetQueryPool
++#define vkCmdResolveImage sw2prdp_vkCmdResolveImage
++#define vkCmdResolveImage2 sw2prdp_vkCmdResolveImage2
++#define vkCmdResolveImage2KHR sw2prdp_vkCmdResolveImage2KHR
++#define vkCmdSetAlphaToCoverageEnableEXT sw2prdp_vkCmdSetAlphaToCoverageEnableEXT
++#define vkCmdSetAlphaToOneEnableEXT sw2prdp_vkCmdSetAlphaToOneEnableEXT
++#define vkCmdSetBlendConstants sw2prdp_vkCmdSetBlendConstants
++#define vkCmdSetCheckpointNV sw2prdp_vkCmdSetCheckpointNV
++#define vkCmdSetCoarseSampleOrderNV sw2prdp_vkCmdSetCoarseSampleOrderNV
++#define vkCmdSetColorBlendAdvancedEXT sw2prdp_vkCmdSetColorBlendAdvancedEXT
++#define vkCmdSetColorBlendEnableEXT sw2prdp_vkCmdSetColorBlendEnableEXT
++#define vkCmdSetColorBlendEquationEXT sw2prdp_vkCmdSetColorBlendEquationEXT
++#define vkCmdSetColorWriteEnableEXT sw2prdp_vkCmdSetColorWriteEnableEXT
++#define vkCmdSetColorWriteMaskEXT sw2prdp_vkCmdSetColorWriteMaskEXT
++#define vkCmdSetConservativeRasterizationModeEXT sw2prdp_vkCmdSetConservativeRasterizationModeEXT
++#define vkCmdSetCoverageModulationModeNV sw2prdp_vkCmdSetCoverageModulationModeNV
++#define vkCmdSetCoverageModulationTableEnableNV sw2prdp_vkCmdSetCoverageModulationTableEnableNV
++#define vkCmdSetCoverageModulationTableNV sw2prdp_vkCmdSetCoverageModulationTableNV
++#define vkCmdSetCoverageReductionModeNV sw2prdp_vkCmdSetCoverageReductionModeNV
++#define vkCmdSetCoverageToColorEnableNV sw2prdp_vkCmdSetCoverageToColorEnableNV
++#define vkCmdSetCoverageToColorLocationNV sw2prdp_vkCmdSetCoverageToColorLocationNV
++#define vkCmdSetCullMode sw2prdp_vkCmdSetCullMode
++#define vkCmdSetCullModeEXT sw2prdp_vkCmdSetCullModeEXT
++#define vkCmdSetDepthBias sw2prdp_vkCmdSetDepthBias
++#define vkCmdSetDepthBiasEnable sw2prdp_vkCmdSetDepthBiasEnable
++#define vkCmdSetDepthBiasEnableEXT sw2prdp_vkCmdSetDepthBiasEnableEXT
++#define vkCmdSetDepthBounds sw2prdp_vkCmdSetDepthBounds
++#define vkCmdSetDepthBoundsTestEnable sw2prdp_vkCmdSetDepthBoundsTestEnable
++#define vkCmdSetDepthBoundsTestEnableEXT sw2prdp_vkCmdSetDepthBoundsTestEnableEXT
++#define vkCmdSetDepthClampEnableEXT sw2prdp_vkCmdSetDepthClampEnableEXT
++#define vkCmdSetDepthClipEnableEXT sw2prdp_vkCmdSetDepthClipEnableEXT
++#define vkCmdSetDepthClipNegativeOneToOneEXT sw2prdp_vkCmdSetDepthClipNegativeOneToOneEXT
++#define vkCmdSetDepthCompareOp sw2prdp_vkCmdSetDepthCompareOp
++#define vkCmdSetDepthCompareOpEXT sw2prdp_vkCmdSetDepthCompareOpEXT
++#define vkCmdSetDepthTestEnable sw2prdp_vkCmdSetDepthTestEnable
++#define vkCmdSetDepthTestEnableEXT sw2prdp_vkCmdSetDepthTestEnableEXT
++#define vkCmdSetDepthWriteEnable sw2prdp_vkCmdSetDepthWriteEnable
++#define vkCmdSetDepthWriteEnableEXT sw2prdp_vkCmdSetDepthWriteEnableEXT
++#define vkCmdSetDescriptorBufferOffsetsEXT sw2prdp_vkCmdSetDescriptorBufferOffsetsEXT
++#define vkCmdSetDeviceMask sw2prdp_vkCmdSetDeviceMask
++#define vkCmdSetDeviceMaskKHR sw2prdp_vkCmdSetDeviceMaskKHR
++#define vkCmdSetDiscardRectangleEXT sw2prdp_vkCmdSetDiscardRectangleEXT
++#define vkCmdSetEvent sw2prdp_vkCmdSetEvent
++#define vkCmdSetEvent2 sw2prdp_vkCmdSetEvent2
++#define vkCmdSetEvent2KHR sw2prdp_vkCmdSetEvent2KHR
++#define vkCmdSetExclusiveScissorNV sw2prdp_vkCmdSetExclusiveScissorNV
++#define vkCmdSetExtraPrimitiveOverestimationSizeEXT sw2prdp_vkCmdSetExtraPrimitiveOverestimationSizeEXT
++#define vkCmdSetFragmentShadingRateEnumNV sw2prdp_vkCmdSetFragmentShadingRateEnumNV
++#define vkCmdSetFragmentShadingRateKHR sw2prdp_vkCmdSetFragmentShadingRateKHR
++#define vkCmdSetFrontFace sw2prdp_vkCmdSetFrontFace
++#define vkCmdSetFrontFaceEXT sw2prdp_vkCmdSetFrontFaceEXT
++#define vkCmdSetLineRasterizationModeEXT sw2prdp_vkCmdSetLineRasterizationModeEXT
++#define vkCmdSetLineStippleEXT sw2prdp_vkCmdSetLineStippleEXT
++#define vkCmdSetLineStippleEnableEXT sw2prdp_vkCmdSetLineStippleEnableEXT
++#define vkCmdSetLineWidth sw2prdp_vkCmdSetLineWidth
++#define vkCmdSetLogicOpEXT sw2prdp_vkCmdSetLogicOpEXT
++#define vkCmdSetLogicOpEnableEXT sw2prdp_vkCmdSetLogicOpEnableEXT
++#define vkCmdSetPatchControlPointsEXT sw2prdp_vkCmdSetPatchControlPointsEXT
++#define vkCmdSetPerformanceMarkerINTEL sw2prdp_vkCmdSetPerformanceMarkerINTEL
++#define vkCmdSetPerformanceOverrideINTEL sw2prdp_vkCmdSetPerformanceOverrideINTEL
++#define vkCmdSetPerformanceStreamMarkerINTEL sw2prdp_vkCmdSetPerformanceStreamMarkerINTEL
++#define vkCmdSetPolygonModeEXT sw2prdp_vkCmdSetPolygonModeEXT
++#define vkCmdSetPrimitiveRestartEnable sw2prdp_vkCmdSetPrimitiveRestartEnable
++#define vkCmdSetPrimitiveRestartEnableEXT sw2prdp_vkCmdSetPrimitiveRestartEnableEXT
++#define vkCmdSetPrimitiveTopology sw2prdp_vkCmdSetPrimitiveTopology
++#define vkCmdSetPrimitiveTopologyEXT sw2prdp_vkCmdSetPrimitiveTopologyEXT
++#define vkCmdSetProvokingVertexModeEXT sw2prdp_vkCmdSetProvokingVertexModeEXT
++#define vkCmdSetRasterizationSamplesEXT sw2prdp_vkCmdSetRasterizationSamplesEXT
++#define vkCmdSetRasterizationStreamEXT sw2prdp_vkCmdSetRasterizationStreamEXT
++#define vkCmdSetRasterizerDiscardEnable sw2prdp_vkCmdSetRasterizerDiscardEnable
++#define vkCmdSetRasterizerDiscardEnableEXT sw2prdp_vkCmdSetRasterizerDiscardEnableEXT
++#define vkCmdSetRayTracingPipelineStackSizeKHR sw2prdp_vkCmdSetRayTracingPipelineStackSizeKHR
++#define vkCmdSetRepresentativeFragmentTestEnableNV sw2prdp_vkCmdSetRepresentativeFragmentTestEnableNV
++#define vkCmdSetSampleLocationsEXT sw2prdp_vkCmdSetSampleLocationsEXT
++#define vkCmdSetSampleLocationsEnableEXT sw2prdp_vkCmdSetSampleLocationsEnableEXT
++#define vkCmdSetSampleMaskEXT sw2prdp_vkCmdSetSampleMaskEXT
++#define vkCmdSetScissor sw2prdp_vkCmdSetScissor
++#define vkCmdSetScissorWithCount sw2prdp_vkCmdSetScissorWithCount
++#define vkCmdSetScissorWithCountEXT sw2prdp_vkCmdSetScissorWithCountEXT
++#define vkCmdSetShadingRateImageEnableNV sw2prdp_vkCmdSetShadingRateImageEnableNV
++#define vkCmdSetStencilCompareMask sw2prdp_vkCmdSetStencilCompareMask
++#define vkCmdSetStencilOp sw2prdp_vkCmdSetStencilOp
++#define vkCmdSetStencilOpEXT sw2prdp_vkCmdSetStencilOpEXT
++#define vkCmdSetStencilReference sw2prdp_vkCmdSetStencilReference
++#define vkCmdSetStencilTestEnable sw2prdp_vkCmdSetStencilTestEnable
++#define vkCmdSetStencilTestEnableEXT sw2prdp_vkCmdSetStencilTestEnableEXT
++#define vkCmdSetStencilWriteMask sw2prdp_vkCmdSetStencilWriteMask
++#define vkCmdSetTessellationDomainOriginEXT sw2prdp_vkCmdSetTessellationDomainOriginEXT
++#define vkCmdSetVertexInputEXT sw2prdp_vkCmdSetVertexInputEXT
++#define vkCmdSetViewport sw2prdp_vkCmdSetViewport
++#define vkCmdSetViewportShadingRatePaletteNV sw2prdp_vkCmdSetViewportShadingRatePaletteNV
++#define vkCmdSetViewportSwizzleNV sw2prdp_vkCmdSetViewportSwizzleNV
++#define vkCmdSetViewportWScalingEnableNV sw2prdp_vkCmdSetViewportWScalingEnableNV
++#define vkCmdSetViewportWScalingNV sw2prdp_vkCmdSetViewportWScalingNV
++#define vkCmdSetViewportWithCount sw2prdp_vkCmdSetViewportWithCount
++#define vkCmdSetViewportWithCountEXT sw2prdp_vkCmdSetViewportWithCountEXT
++#define vkCmdSubpassShadingHUAWEI sw2prdp_vkCmdSubpassShadingHUAWEI
++#define vkCmdTraceRaysIndirect2KHR sw2prdp_vkCmdTraceRaysIndirect2KHR
++#define vkCmdTraceRaysIndirectKHR sw2prdp_vkCmdTraceRaysIndirectKHR
++#define vkCmdTraceRaysKHR sw2prdp_vkCmdTraceRaysKHR
++#define vkCmdTraceRaysNV sw2prdp_vkCmdTraceRaysNV
++#define vkCmdUpdateBuffer sw2prdp_vkCmdUpdateBuffer
++#define vkCmdWaitEvents sw2prdp_vkCmdWaitEvents
++#define vkCmdWaitEvents2 sw2prdp_vkCmdWaitEvents2
++#define vkCmdWaitEvents2KHR sw2prdp_vkCmdWaitEvents2KHR
++#define vkCmdWriteAccelerationStructuresPropertiesKHR sw2prdp_vkCmdWriteAccelerationStructuresPropertiesKHR
++#define vkCmdWriteAccelerationStructuresPropertiesNV sw2prdp_vkCmdWriteAccelerationStructuresPropertiesNV
++#define vkCmdWriteBufferMarker2AMD sw2prdp_vkCmdWriteBufferMarker2AMD
++#define vkCmdWriteBufferMarkerAMD sw2prdp_vkCmdWriteBufferMarkerAMD
++#define vkCmdWriteMicromapsPropertiesEXT sw2prdp_vkCmdWriteMicromapsPropertiesEXT
++#define vkCmdWriteTimestamp sw2prdp_vkCmdWriteTimestamp
++#define vkCmdWriteTimestamp2 sw2prdp_vkCmdWriteTimestamp2
++#define vkCmdWriteTimestamp2KHR sw2prdp_vkCmdWriteTimestamp2KHR
++#define vkCompileDeferredNV sw2prdp_vkCompileDeferredNV
++#define vkCopyAccelerationStructureKHR sw2prdp_vkCopyAccelerationStructureKHR
++#define vkCopyAccelerationStructureToMemoryKHR sw2prdp_vkCopyAccelerationStructureToMemoryKHR
++#define vkCopyMemoryToAccelerationStructureKHR sw2prdp_vkCopyMemoryToAccelerationStructureKHR
++#define vkCopyMemoryToMicromapEXT sw2prdp_vkCopyMemoryToMicromapEXT
++#define vkCopyMicromapEXT sw2prdp_vkCopyMicromapEXT
++#define vkCopyMicromapToMemoryEXT sw2prdp_vkCopyMicromapToMemoryEXT
++#define vkCreateAccelerationStructureKHR sw2prdp_vkCreateAccelerationStructureKHR
++#define vkCreateAccelerationStructureNV sw2prdp_vkCreateAccelerationStructureNV
++#define vkCreateAndroidSurfaceKHR sw2prdp_vkCreateAndroidSurfaceKHR
++#define vkCreateBuffer sw2prdp_vkCreateBuffer
++#define vkCreateBufferCollectionFUCHSIA sw2prdp_vkCreateBufferCollectionFUCHSIA
++#define vkCreateBufferView sw2prdp_vkCreateBufferView
++#define vkCreateCommandPool sw2prdp_vkCreateCommandPool
++#define vkCreateComputePipelines sw2prdp_vkCreateComputePipelines
++#define vkCreateCuFunctionNVX sw2prdp_vkCreateCuFunctionNVX
++#define vkCreateCuModuleNVX sw2prdp_vkCreateCuModuleNVX
++#define vkCreateDebugReportCallbackEXT sw2prdp_vkCreateDebugReportCallbackEXT
++#define vkCreateDebugUtilsMessengerEXT sw2prdp_vkCreateDebugUtilsMessengerEXT
++#define vkCreateDeferredOperationKHR sw2prdp_vkCreateDeferredOperationKHR
++#define vkCreateDescriptorPool sw2prdp_vkCreateDescriptorPool
++#define vkCreateDescriptorSetLayout sw2prdp_vkCreateDescriptorSetLayout
++#define vkCreateDescriptorUpdateTemplate sw2prdp_vkCreateDescriptorUpdateTemplate
++#define vkCreateDescriptorUpdateTemplateKHR sw2prdp_vkCreateDescriptorUpdateTemplateKHR
++#define vkCreateDevice sw2prdp_vkCreateDevice
++#define vkCreateDirectFBSurfaceEXT sw2prdp_vkCreateDirectFBSurfaceEXT
++#define vkCreateDisplayModeKHR sw2prdp_vkCreateDisplayModeKHR
++#define vkCreateDisplayPlaneSurfaceKHR sw2prdp_vkCreateDisplayPlaneSurfaceKHR
++#define vkCreateEvent sw2prdp_vkCreateEvent
++#define vkCreateFence sw2prdp_vkCreateFence
++#define vkCreateFramebuffer sw2prdp_vkCreateFramebuffer
++#define vkCreateGraphicsPipelines sw2prdp_vkCreateGraphicsPipelines
++#define vkCreateHeadlessSurfaceEXT sw2prdp_vkCreateHeadlessSurfaceEXT
++#define vkCreateIOSSurfaceMVK sw2prdp_vkCreateIOSSurfaceMVK
++#define vkCreateImage sw2prdp_vkCreateImage
++#define vkCreateImagePipeSurfaceFUCHSIA sw2prdp_vkCreateImagePipeSurfaceFUCHSIA
++#define vkCreateImageView sw2prdp_vkCreateImageView
++#define vkCreateIndirectCommandsLayoutNV sw2prdp_vkCreateIndirectCommandsLayoutNV
++#define vkCreateInstance sw2prdp_vkCreateInstance
++#define vkCreateMacOSSurfaceMVK sw2prdp_vkCreateMacOSSurfaceMVK
++#define vkCreateMetalSurfaceEXT sw2prdp_vkCreateMetalSurfaceEXT
++#define vkCreateMicromapEXT sw2prdp_vkCreateMicromapEXT
++#define vkCreateOpticalFlowSessionNV sw2prdp_vkCreateOpticalFlowSessionNV
++#define vkCreatePipelineCache sw2prdp_vkCreatePipelineCache
++#define vkCreatePipelineLayout sw2prdp_vkCreatePipelineLayout
++#define vkCreatePrivateDataSlot sw2prdp_vkCreatePrivateDataSlot
++#define vkCreatePrivateDataSlotEXT sw2prdp_vkCreatePrivateDataSlotEXT
++#define vkCreateQueryPool sw2prdp_vkCreateQueryPool
++#define vkCreateRayTracingPipelinesKHR sw2prdp_vkCreateRayTracingPipelinesKHR
++#define vkCreateRayTracingPipelinesNV sw2prdp_vkCreateRayTracingPipelinesNV
++#define vkCreateRenderPass sw2prdp_vkCreateRenderPass
++#define vkCreateRenderPass2 sw2prdp_vkCreateRenderPass2
++#define vkCreateRenderPass2KHR sw2prdp_vkCreateRenderPass2KHR
++#define vkCreateSampler sw2prdp_vkCreateSampler
++#define vkCreateSamplerYcbcrConversion sw2prdp_vkCreateSamplerYcbcrConversion
++#define vkCreateSamplerYcbcrConversionKHR sw2prdp_vkCreateSamplerYcbcrConversionKHR
++#define vkCreateScreenSurfaceQNX sw2prdp_vkCreateScreenSurfaceQNX
++#define vkCreateSemaphore sw2prdp_vkCreateSemaphore
++#define vkCreateShaderModule sw2prdp_vkCreateShaderModule
++#define vkCreateSharedSwapchainsKHR sw2prdp_vkCreateSharedSwapchainsKHR
++#define vkCreateStreamDescriptorSurfaceGGP sw2prdp_vkCreateStreamDescriptorSurfaceGGP
++#define vkCreateSwapchainKHR sw2prdp_vkCreateSwapchainKHR
++#define vkCreateValidationCacheEXT sw2prdp_vkCreateValidationCacheEXT
++#define vkCreateViSurfaceNN sw2prdp_vkCreateViSurfaceNN
++#define vkCreateVideoSessionKHR sw2prdp_vkCreateVideoSessionKHR
++#define vkCreateVideoSessionParametersKHR sw2prdp_vkCreateVideoSessionParametersKHR
++#define vkCreateWaylandSurfaceKHR sw2prdp_vkCreateWaylandSurfaceKHR
++#define vkCreateWin32SurfaceKHR sw2prdp_vkCreateWin32SurfaceKHR
++#define vkCreateXcbSurfaceKHR sw2prdp_vkCreateXcbSurfaceKHR
++#define vkCreateXlibSurfaceKHR sw2prdp_vkCreateXlibSurfaceKHR
++#define vkDebugMarkerSetObjectNameEXT sw2prdp_vkDebugMarkerSetObjectNameEXT
++#define vkDebugMarkerSetObjectTagEXT sw2prdp_vkDebugMarkerSetObjectTagEXT
++#define vkDebugReportMessageEXT sw2prdp_vkDebugReportMessageEXT
++#define vkDeferredOperationJoinKHR sw2prdp_vkDeferredOperationJoinKHR
++#define vkDestroyAccelerationStructureKHR sw2prdp_vkDestroyAccelerationStructureKHR
++#define vkDestroyAccelerationStructureNV sw2prdp_vkDestroyAccelerationStructureNV
++#define vkDestroyBuffer sw2prdp_vkDestroyBuffer
++#define vkDestroyBufferCollectionFUCHSIA sw2prdp_vkDestroyBufferCollectionFUCHSIA
++#define vkDestroyBufferView sw2prdp_vkDestroyBufferView
++#define vkDestroyCommandPool sw2prdp_vkDestroyCommandPool
++#define vkDestroyCuFunctionNVX sw2prdp_vkDestroyCuFunctionNVX
++#define vkDestroyCuModuleNVX sw2prdp_vkDestroyCuModuleNVX
++#define vkDestroyDebugReportCallbackEXT sw2prdp_vkDestroyDebugReportCallbackEXT
++#define vkDestroyDebugUtilsMessengerEXT sw2prdp_vkDestroyDebugUtilsMessengerEXT
++#define vkDestroyDeferredOperationKHR sw2prdp_vkDestroyDeferredOperationKHR
++#define vkDestroyDescriptorPool sw2prdp_vkDestroyDescriptorPool
++#define vkDestroyDescriptorSetLayout sw2prdp_vkDestroyDescriptorSetLayout
++#define vkDestroyDescriptorUpdateTemplate sw2prdp_vkDestroyDescriptorUpdateTemplate
++#define vkDestroyDescriptorUpdateTemplateKHR sw2prdp_vkDestroyDescriptorUpdateTemplateKHR
++#define vkDestroyDevice sw2prdp_vkDestroyDevice
++#define vkDestroyEvent sw2prdp_vkDestroyEvent
++#define vkDestroyFence sw2prdp_vkDestroyFence
++#define vkDestroyFramebuffer sw2prdp_vkDestroyFramebuffer
++#define vkDestroyImage sw2prdp_vkDestroyImage
++#define vkDestroyImageView sw2prdp_vkDestroyImageView
++#define vkDestroyIndirectCommandsLayoutNV sw2prdp_vkDestroyIndirectCommandsLayoutNV
++#define vkDestroyInstance sw2prdp_vkDestroyInstance
++#define vkDestroyMicromapEXT sw2prdp_vkDestroyMicromapEXT
++#define vkDestroyOpticalFlowSessionNV sw2prdp_vkDestroyOpticalFlowSessionNV
++#define vkDestroyPipeline sw2prdp_vkDestroyPipeline
++#define vkDestroyPipelineCache sw2prdp_vkDestroyPipelineCache
++#define vkDestroyPipelineLayout sw2prdp_vkDestroyPipelineLayout
++#define vkDestroyPrivateDataSlot sw2prdp_vkDestroyPrivateDataSlot
++#define vkDestroyPrivateDataSlotEXT sw2prdp_vkDestroyPrivateDataSlotEXT
++#define vkDestroyQueryPool sw2prdp_vkDestroyQueryPool
++#define vkDestroyRenderPass sw2prdp_vkDestroyRenderPass
++#define vkDestroySampler sw2prdp_vkDestroySampler
++#define vkDestroySamplerYcbcrConversion sw2prdp_vkDestroySamplerYcbcrConversion
++#define vkDestroySamplerYcbcrConversionKHR sw2prdp_vkDestroySamplerYcbcrConversionKHR
++#define vkDestroySemaphore sw2prdp_vkDestroySemaphore
++#define vkDestroyShaderModule sw2prdp_vkDestroyShaderModule
++#define vkDestroySurfaceKHR sw2prdp_vkDestroySurfaceKHR
++#define vkDestroySwapchainKHR sw2prdp_vkDestroySwapchainKHR
++#define vkDestroyValidationCacheEXT sw2prdp_vkDestroyValidationCacheEXT
++#define vkDestroyVideoSessionKHR sw2prdp_vkDestroyVideoSessionKHR
++#define vkDestroyVideoSessionParametersKHR sw2prdp_vkDestroyVideoSessionParametersKHR
++#define vkDeviceWaitIdle sw2prdp_vkDeviceWaitIdle
++#define vkDisplayPowerControlEXT sw2prdp_vkDisplayPowerControlEXT
++#define vkEndCommandBuffer sw2prdp_vkEndCommandBuffer
++#define vkEnumerateDeviceExtensionProperties sw2prdp_vkEnumerateDeviceExtensionProperties
++#define vkEnumerateDeviceLayerProperties sw2prdp_vkEnumerateDeviceLayerProperties
++#define vkEnumerateInstanceExtensionProperties sw2prdp_vkEnumerateInstanceExtensionProperties
++#define vkEnumerateInstanceLayerProperties sw2prdp_vkEnumerateInstanceLayerProperties
++#define vkEnumerateInstanceVersion sw2prdp_vkEnumerateInstanceVersion
++#define vkEnumeratePhysicalDeviceGroups sw2prdp_vkEnumeratePhysicalDeviceGroups
++#define vkEnumeratePhysicalDeviceGroupsKHR sw2prdp_vkEnumeratePhysicalDeviceGroupsKHR
++#define vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR sw2prdp_vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR
++#define vkEnumeratePhysicalDevices sw2prdp_vkEnumeratePhysicalDevices
++#define vkExportMetalObjectsEXT sw2prdp_vkExportMetalObjectsEXT
++#define vkFlushMappedMemoryRanges sw2prdp_vkFlushMappedMemoryRanges
++#define vkFreeCommandBuffers sw2prdp_vkFreeCommandBuffers
++#define vkFreeDescriptorSets sw2prdp_vkFreeDescriptorSets
++#define vkFreeMemory sw2prdp_vkFreeMemory
++#define vkGetAccelerationStructureBuildSizesKHR sw2prdp_vkGetAccelerationStructureBuildSizesKHR
++#define vkGetAccelerationStructureDeviceAddressKHR sw2prdp_vkGetAccelerationStructureDeviceAddressKHR
++#define vkGetAccelerationStructureHandleNV sw2prdp_vkGetAccelerationStructureHandleNV
++#define vkGetAccelerationStructureMemoryRequirementsNV sw2prdp_vkGetAccelerationStructureMemoryRequirementsNV
++#define vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT sw2prdp_vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT
++#define vkGetAndroidHardwareBufferPropertiesANDROID sw2prdp_vkGetAndroidHardwareBufferPropertiesANDROID
++#define vkGetBufferCollectionPropertiesFUCHSIA sw2prdp_vkGetBufferCollectionPropertiesFUCHSIA
++#define vkGetBufferDeviceAddress sw2prdp_vkGetBufferDeviceAddress
++#define vkGetBufferDeviceAddressEXT sw2prdp_vkGetBufferDeviceAddressEXT
++#define vkGetBufferDeviceAddressKHR sw2prdp_vkGetBufferDeviceAddressKHR
++#define vkGetBufferMemoryRequirements sw2prdp_vkGetBufferMemoryRequirements
++#define vkGetBufferMemoryRequirements2 sw2prdp_vkGetBufferMemoryRequirements2
++#define vkGetBufferMemoryRequirements2KHR sw2prdp_vkGetBufferMemoryRequirements2KHR
++#define vkGetBufferOpaqueCaptureAddress sw2prdp_vkGetBufferOpaqueCaptureAddress
++#define vkGetBufferOpaqueCaptureAddressKHR sw2prdp_vkGetBufferOpaqueCaptureAddressKHR
++#define vkGetBufferOpaqueCaptureDescriptorDataEXT sw2prdp_vkGetBufferOpaqueCaptureDescriptorDataEXT
++#define vkGetCalibratedTimestampsEXT sw2prdp_vkGetCalibratedTimestampsEXT
++#define vkGetDeferredOperationMaxConcurrencyKHR sw2prdp_vkGetDeferredOperationMaxConcurrencyKHR
++#define vkGetDeferredOperationResultKHR sw2prdp_vkGetDeferredOperationResultKHR
++#define vkGetDescriptorEXT sw2prdp_vkGetDescriptorEXT
++#define vkGetDescriptorSetHostMappingVALVE sw2prdp_vkGetDescriptorSetHostMappingVALVE
++#define vkGetDescriptorSetLayoutBindingOffsetEXT sw2prdp_vkGetDescriptorSetLayoutBindingOffsetEXT
++#define vkGetDescriptorSetLayoutHostMappingInfoVALVE sw2prdp_vkGetDescriptorSetLayoutHostMappingInfoVALVE
++#define vkGetDescriptorSetLayoutSizeEXT sw2prdp_vkGetDescriptorSetLayoutSizeEXT
++#define vkGetDescriptorSetLayoutSupport sw2prdp_vkGetDescriptorSetLayoutSupport
++#define vkGetDescriptorSetLayoutSupportKHR sw2prdp_vkGetDescriptorSetLayoutSupportKHR
++#define vkGetDeviceAccelerationStructureCompatibilityKHR sw2prdp_vkGetDeviceAccelerationStructureCompatibilityKHR
++#define vkGetDeviceBufferMemoryRequirements sw2prdp_vkGetDeviceBufferMemoryRequirements
++#define vkGetDeviceBufferMemoryRequirementsKHR sw2prdp_vkGetDeviceBufferMemoryRequirementsKHR
++#define vkGetDeviceFaultInfoEXT sw2prdp_vkGetDeviceFaultInfoEXT
++#define vkGetDeviceGroupPeerMemoryFeatures sw2prdp_vkGetDeviceGroupPeerMemoryFeatures
++#define vkGetDeviceGroupPeerMemoryFeaturesKHR sw2prdp_vkGetDeviceGroupPeerMemoryFeaturesKHR
++#define vkGetDeviceGroupPresentCapabilitiesKHR sw2prdp_vkGetDeviceGroupPresentCapabilitiesKHR
++#define vkGetDeviceGroupSurfacePresentModes2EXT sw2prdp_vkGetDeviceGroupSurfacePresentModes2EXT
++#define vkGetDeviceGroupSurfacePresentModesKHR sw2prdp_vkGetDeviceGroupSurfacePresentModesKHR
++#define vkGetDeviceImageMemoryRequirements sw2prdp_vkGetDeviceImageMemoryRequirements
++#define vkGetDeviceImageMemoryRequirementsKHR sw2prdp_vkGetDeviceImageMemoryRequirementsKHR
++#define vkGetDeviceImageSparseMemoryRequirements sw2prdp_vkGetDeviceImageSparseMemoryRequirements
++#define vkGetDeviceImageSparseMemoryRequirementsKHR sw2prdp_vkGetDeviceImageSparseMemoryRequirementsKHR
++#define vkGetDeviceMemoryCommitment sw2prdp_vkGetDeviceMemoryCommitment
++#define vkGetDeviceMemoryOpaqueCaptureAddress sw2prdp_vkGetDeviceMemoryOpaqueCaptureAddress
++#define vkGetDeviceMemoryOpaqueCaptureAddressKHR sw2prdp_vkGetDeviceMemoryOpaqueCaptureAddressKHR
++#define vkGetDeviceMicromapCompatibilityEXT sw2prdp_vkGetDeviceMicromapCompatibilityEXT
++#define vkGetDeviceProcAddr sw2prdp_vkGetDeviceProcAddr
++#define vkGetDeviceQueue sw2prdp_vkGetDeviceQueue
++#define vkGetDeviceQueue2 sw2prdp_vkGetDeviceQueue2
++#define vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI sw2prdp_vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI
++#define vkGetDisplayModeProperties2KHR sw2prdp_vkGetDisplayModeProperties2KHR
++#define vkGetDisplayModePropertiesKHR sw2prdp_vkGetDisplayModePropertiesKHR
++#define vkGetDisplayPlaneCapabilities2KHR sw2prdp_vkGetDisplayPlaneCapabilities2KHR
++#define vkGetDisplayPlaneCapabilitiesKHR sw2prdp_vkGetDisplayPlaneCapabilitiesKHR
++#define vkGetDisplayPlaneSupportedDisplaysKHR sw2prdp_vkGetDisplayPlaneSupportedDisplaysKHR
++#define vkGetDrmDisplayEXT sw2prdp_vkGetDrmDisplayEXT
++#define vkGetDynamicRenderingTilePropertiesQCOM sw2prdp_vkGetDynamicRenderingTilePropertiesQCOM
++#define vkGetEventStatus sw2prdp_vkGetEventStatus
++#define vkGetFenceFdKHR sw2prdp_vkGetFenceFdKHR
++#define vkGetFenceStatus sw2prdp_vkGetFenceStatus
++#define vkGetFenceWin32HandleKHR sw2prdp_vkGetFenceWin32HandleKHR
++#define vkGetFramebufferTilePropertiesQCOM sw2prdp_vkGetFramebufferTilePropertiesQCOM
++#define vkGetGeneratedCommandsMemoryRequirementsNV sw2prdp_vkGetGeneratedCommandsMemoryRequirementsNV
++#define vkGetImageDrmFormatModifierPropertiesEXT sw2prdp_vkGetImageDrmFormatModifierPropertiesEXT
++#define vkGetImageMemoryRequirements sw2prdp_vkGetImageMemoryRequirements
++#define vkGetImageMemoryRequirements2 sw2prdp_vkGetImageMemoryRequirements2
++#define vkGetImageMemoryRequirements2KHR sw2prdp_vkGetImageMemoryRequirements2KHR
++#define vkGetImageOpaqueCaptureDescriptorDataEXT sw2prdp_vkGetImageOpaqueCaptureDescriptorDataEXT
++#define vkGetImageSparseMemoryRequirements sw2prdp_vkGetImageSparseMemoryRequirements
++#define vkGetImageSparseMemoryRequirements2 sw2prdp_vkGetImageSparseMemoryRequirements2
++#define vkGetImageSparseMemoryRequirements2KHR sw2prdp_vkGetImageSparseMemoryRequirements2KHR
++#define vkGetImageSubresourceLayout sw2prdp_vkGetImageSubresourceLayout
++#define vkGetImageSubresourceLayout2EXT sw2prdp_vkGetImageSubresourceLayout2EXT
++#define vkGetImageViewAddressNVX sw2prdp_vkGetImageViewAddressNVX
++#define vkGetImageViewHandleNVX sw2prdp_vkGetImageViewHandleNVX
++#define vkGetImageViewOpaqueCaptureDescriptorDataEXT sw2prdp_vkGetImageViewOpaqueCaptureDescriptorDataEXT
++#define vkGetInstanceProcAddr sw2prdp_vkGetInstanceProcAddr
++#define vkGetMemoryAndroidHardwareBufferANDROID sw2prdp_vkGetMemoryAndroidHardwareBufferANDROID
++#define vkGetMemoryFdKHR sw2prdp_vkGetMemoryFdKHR
++#define vkGetMemoryFdPropertiesKHR sw2prdp_vkGetMemoryFdPropertiesKHR
++#define vkGetMemoryHostPointerPropertiesEXT sw2prdp_vkGetMemoryHostPointerPropertiesEXT
++#define vkGetMemoryRemoteAddressNV sw2prdp_vkGetMemoryRemoteAddressNV
++#define vkGetMemoryWin32HandleKHR sw2prdp_vkGetMemoryWin32HandleKHR
++#define vkGetMemoryWin32HandleNV sw2prdp_vkGetMemoryWin32HandleNV
++#define vkGetMemoryWin32HandlePropertiesKHR sw2prdp_vkGetMemoryWin32HandlePropertiesKHR
++#define vkGetMemoryZirconHandleFUCHSIA sw2prdp_vkGetMemoryZirconHandleFUCHSIA
++#define vkGetMemoryZirconHandlePropertiesFUCHSIA sw2prdp_vkGetMemoryZirconHandlePropertiesFUCHSIA
++#define vkGetMicromapBuildSizesEXT sw2prdp_vkGetMicromapBuildSizesEXT
++#define vkGetPastPresentationTimingGOOGLE sw2prdp_vkGetPastPresentationTimingGOOGLE
++#define vkGetPerformanceParameterINTEL sw2prdp_vkGetPerformanceParameterINTEL
++#define vkGetPhysicalDeviceCalibrateableTimeDomainsEXT sw2prdp_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT
++#define vkGetPhysicalDeviceCooperativeMatrixPropertiesNV sw2prdp_vkGetPhysicalDeviceCooperativeMatrixPropertiesNV
++#define vkGetPhysicalDeviceDirectFBPresentationSupportEXT sw2prdp_vkGetPhysicalDeviceDirectFBPresentationSupportEXT
++#define vkGetPhysicalDeviceDisplayPlaneProperties2KHR sw2prdp_vkGetPhysicalDeviceDisplayPlaneProperties2KHR
++#define vkGetPhysicalDeviceDisplayPlanePropertiesKHR sw2prdp_vkGetPhysicalDeviceDisplayPlanePropertiesKHR
++#define vkGetPhysicalDeviceDisplayProperties2KHR sw2prdp_vkGetPhysicalDeviceDisplayProperties2KHR
++#define vkGetPhysicalDeviceDisplayPropertiesKHR sw2prdp_vkGetPhysicalDeviceDisplayPropertiesKHR
++#define vkGetPhysicalDeviceExternalBufferProperties sw2prdp_vkGetPhysicalDeviceExternalBufferProperties
++#define vkGetPhysicalDeviceExternalBufferPropertiesKHR sw2prdp_vkGetPhysicalDeviceExternalBufferPropertiesKHR
++#define vkGetPhysicalDeviceExternalFenceProperties sw2prdp_vkGetPhysicalDeviceExternalFenceProperties
++#define vkGetPhysicalDeviceExternalFencePropertiesKHR sw2prdp_vkGetPhysicalDeviceExternalFencePropertiesKHR
++#define vkGetPhysicalDeviceExternalImageFormatPropertiesNV sw2prdp_vkGetPhysicalDeviceExternalImageFormatPropertiesNV
++#define vkGetPhysicalDeviceExternalSemaphoreProperties sw2prdp_vkGetPhysicalDeviceExternalSemaphoreProperties
++#define vkGetPhysicalDeviceExternalSemaphorePropertiesKHR sw2prdp_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR
++#define vkGetPhysicalDeviceFeatures sw2prdp_vkGetPhysicalDeviceFeatures
++#define vkGetPhysicalDeviceFeatures2 sw2prdp_vkGetPhysicalDeviceFeatures2
++#define vkGetPhysicalDeviceFeatures2KHR sw2prdp_vkGetPhysicalDeviceFeatures2KHR
++#define vkGetPhysicalDeviceFormatProperties sw2prdp_vkGetPhysicalDeviceFormatProperties
++#define vkGetPhysicalDeviceFormatProperties2 sw2prdp_vkGetPhysicalDeviceFormatProperties2
++#define vkGetPhysicalDeviceFormatProperties2KHR sw2prdp_vkGetPhysicalDeviceFormatProperties2KHR
++#define vkGetPhysicalDeviceFragmentShadingRatesKHR sw2prdp_vkGetPhysicalDeviceFragmentShadingRatesKHR
++#define vkGetPhysicalDeviceImageFormatProperties sw2prdp_vkGetPhysicalDeviceImageFormatProperties
++#define vkGetPhysicalDeviceImageFormatProperties2 sw2prdp_vkGetPhysicalDeviceImageFormatProperties2
++#define vkGetPhysicalDeviceImageFormatProperties2KHR sw2prdp_vkGetPhysicalDeviceImageFormatProperties2KHR
++#define vkGetPhysicalDeviceMemoryProperties sw2prdp_vkGetPhysicalDeviceMemoryProperties
++#define vkGetPhysicalDeviceMemoryProperties2 sw2prdp_vkGetPhysicalDeviceMemoryProperties2
++#define vkGetPhysicalDeviceMemoryProperties2KHR sw2prdp_vkGetPhysicalDeviceMemoryProperties2KHR
++#define vkGetPhysicalDeviceMultisamplePropertiesEXT sw2prdp_vkGetPhysicalDeviceMultisamplePropertiesEXT
++#define vkGetPhysicalDeviceOpticalFlowImageFormatsNV sw2prdp_vkGetPhysicalDeviceOpticalFlowImageFormatsNV
++#define vkGetPhysicalDevicePresentRectanglesKHR sw2prdp_vkGetPhysicalDevicePresentRectanglesKHR
++#define vkGetPhysicalDeviceProperties sw2prdp_vkGetPhysicalDeviceProperties
++#define vkGetPhysicalDeviceProperties2 sw2prdp_vkGetPhysicalDeviceProperties2
++#define vkGetPhysicalDeviceProperties2KHR sw2prdp_vkGetPhysicalDeviceProperties2KHR
++#define vkGetPhysicalDeviceQueueFamilyPerformanceQueryPassesKHR sw2prdp_vkGetPhysicalDeviceQueueFamilyPerformanceQueryPassesKHR
++#define vkGetPhysicalDeviceQueueFamilyProperties sw2prdp_vkGetPhysicalDeviceQueueFamilyProperties
++#define vkGetPhysicalDeviceQueueFamilyProperties2 sw2prdp_vkGetPhysicalDeviceQueueFamilyProperties2
++#define vkGetPhysicalDeviceQueueFamilyProperties2KHR sw2prdp_vkGetPhysicalDeviceQueueFamilyProperties2KHR
++#define vkGetPhysicalDeviceScreenPresentationSupportQNX sw2prdp_vkGetPhysicalDeviceScreenPresentationSupportQNX
++#define vkGetPhysicalDeviceSparseImageFormatProperties sw2prdp_vkGetPhysicalDeviceSparseImageFormatProperties
++#define vkGetPhysicalDeviceSparseImageFormatProperties2 sw2prdp_vkGetPhysicalDeviceSparseImageFormatProperties2
++#define vkGetPhysicalDeviceSparseImageFormatProperties2KHR sw2prdp_vkGetPhysicalDeviceSparseImageFormatProperties2KHR
++#define vkGetPhysicalDeviceSupportedFramebufferMixedSamplesCombinationsNV sw2prdp_vkGetPhysicalDeviceSupportedFramebufferMixedSamplesCombinationsNV
++#define vkGetPhysicalDeviceSurfaceCapabilities2EXT sw2prdp_vkGetPhysicalDeviceSurfaceCapabilities2EXT
++#define vkGetPhysicalDeviceSurfaceCapabilities2KHR sw2prdp_vkGetPhysicalDeviceSurfaceCapabilities2KHR
++#define vkGetPhysicalDeviceSurfaceCapabilitiesKHR sw2prdp_vkGetPhysicalDeviceSurfaceCapabilitiesKHR
++#define vkGetPhysicalDeviceSurfaceFormats2KHR sw2prdp_vkGetPhysicalDeviceSurfaceFormats2KHR
++#define vkGetPhysicalDeviceSurfaceFormatsKHR sw2prdp_vkGetPhysicalDeviceSurfaceFormatsKHR
++#define vkGetPhysicalDeviceSurfacePresentModes2EXT sw2prdp_vkGetPhysicalDeviceSurfacePresentModes2EXT
++#define vkGetPhysicalDeviceSurfacePresentModesKHR sw2prdp_vkGetPhysicalDeviceSurfacePresentModesKHR
++#define vkGetPhysicalDeviceSurfaceSupportKHR sw2prdp_vkGetPhysicalDeviceSurfaceSupportKHR
++#define vkGetPhysicalDeviceToolProperties sw2prdp_vkGetPhysicalDeviceToolProperties
++#define vkGetPhysicalDeviceToolPropertiesEXT sw2prdp_vkGetPhysicalDeviceToolPropertiesEXT
++#define vkGetPhysicalDeviceVideoCapabilitiesKHR sw2prdp_vkGetPhysicalDeviceVideoCapabilitiesKHR
++#define vkGetPhysicalDeviceVideoFormatPropertiesKHR sw2prdp_vkGetPhysicalDeviceVideoFormatPropertiesKHR
++#define vkGetPhysicalDeviceWaylandPresentationSupportKHR sw2prdp_vkGetPhysicalDeviceWaylandPresentationSupportKHR
++#define vkGetPhysicalDeviceWin32PresentationSupportKHR sw2prdp_vkGetPhysicalDeviceWin32PresentationSupportKHR
++#define vkGetPhysicalDeviceXcbPresentationSupportKHR sw2prdp_vkGetPhysicalDeviceXcbPresentationSupportKHR
++#define vkGetPhysicalDeviceXlibPresentationSupportKHR sw2prdp_vkGetPhysicalDeviceXlibPresentationSupportKHR
++#define vkGetPipelineCacheData sw2prdp_vkGetPipelineCacheData
++#define vkGetPipelineExecutableInternalRepresentationsKHR sw2prdp_vkGetPipelineExecutableInternalRepresentationsKHR
++#define vkGetPipelineExecutablePropertiesKHR sw2prdp_vkGetPipelineExecutablePropertiesKHR
++#define vkGetPipelineExecutableStatisticsKHR sw2prdp_vkGetPipelineExecutableStatisticsKHR
++#define vkGetPipelinePropertiesEXT sw2prdp_vkGetPipelinePropertiesEXT
++#define vkGetPrivateData sw2prdp_vkGetPrivateData
++#define vkGetPrivateDataEXT sw2prdp_vkGetPrivateDataEXT
++#define vkGetQueryPoolResults sw2prdp_vkGetQueryPoolResults
++#define vkGetQueueCheckpointData2NV sw2prdp_vkGetQueueCheckpointData2NV
++#define vkGetQueueCheckpointDataNV sw2prdp_vkGetQueueCheckpointDataNV
++#define vkGetRandROutputDisplayEXT sw2prdp_vkGetRandROutputDisplayEXT
++#define vkGetRayTracingCaptureReplayShaderGroupHandlesKHR sw2prdp_vkGetRayTracingCaptureReplayShaderGroupHandlesKHR
++#define vkGetRayTracingShaderGroupHandlesKHR sw2prdp_vkGetRayTracingShaderGroupHandlesKHR
++#define vkGetRayTracingShaderGroupHandlesNV sw2prdp_vkGetRayTracingShaderGroupHandlesNV
++#define vkGetRayTracingShaderGroupStackSizeKHR sw2prdp_vkGetRayTracingShaderGroupStackSizeKHR
++#define vkGetRefreshCycleDurationGOOGLE sw2prdp_vkGetRefreshCycleDurationGOOGLE
++#define vkGetRenderAreaGranularity sw2prdp_vkGetRenderAreaGranularity
++#define vkGetSamplerOpaqueCaptureDescriptorDataEXT sw2prdp_vkGetSamplerOpaqueCaptureDescriptorDataEXT
++#define vkGetSemaphoreCounterValue sw2prdp_vkGetSemaphoreCounterValue
++#define vkGetSemaphoreCounterValueKHR sw2prdp_vkGetSemaphoreCounterValueKHR
++#define vkGetSemaphoreFdKHR sw2prdp_vkGetSemaphoreFdKHR
++#define vkGetSemaphoreWin32HandleKHR sw2prdp_vkGetSemaphoreWin32HandleKHR
++#define vkGetSemaphoreZirconHandleFUCHSIA sw2prdp_vkGetSemaphoreZirconHandleFUCHSIA
++#define vkGetShaderInfoAMD sw2prdp_vkGetShaderInfoAMD
++#define vkGetShaderModuleCreateInfoIdentifierEXT sw2prdp_vkGetShaderModuleCreateInfoIdentifierEXT
++#define vkGetShaderModuleIdentifierEXT sw2prdp_vkGetShaderModuleIdentifierEXT
++#define vkGetSwapchainCounterEXT sw2prdp_vkGetSwapchainCounterEXT
++#define vkGetSwapchainImagesKHR sw2prdp_vkGetSwapchainImagesKHR
++#define vkGetSwapchainStatusKHR sw2prdp_vkGetSwapchainStatusKHR
++#define vkGetValidationCacheDataEXT sw2prdp_vkGetValidationCacheDataEXT
++#define vkGetVideoSessionMemoryRequirementsKHR sw2prdp_vkGetVideoSessionMemoryRequirementsKHR
++#define vkGetWinrtDisplayNV sw2prdp_vkGetWinrtDisplayNV
++#define vkImportFenceFdKHR sw2prdp_vkImportFenceFdKHR
++#define vkImportFenceWin32HandleKHR sw2prdp_vkImportFenceWin32HandleKHR
++#define vkImportSemaphoreFdKHR sw2prdp_vkImportSemaphoreFdKHR
++#define vkImportSemaphoreWin32HandleKHR sw2prdp_vkImportSemaphoreWin32HandleKHR
++#define vkImportSemaphoreZirconHandleFUCHSIA sw2prdp_vkImportSemaphoreZirconHandleFUCHSIA
++#define vkInitializePerformanceApiINTEL sw2prdp_vkInitializePerformanceApiINTEL
++#define vkInvalidateMappedMemoryRanges sw2prdp_vkInvalidateMappedMemoryRanges
++#define vkMapMemory sw2prdp_vkMapMemory
++#define vkMergePipelineCaches sw2prdp_vkMergePipelineCaches
++#define vkMergeValidationCachesEXT sw2prdp_vkMergeValidationCachesEXT
++#define vkQueueBeginDebugUtilsLabelEXT sw2prdp_vkQueueBeginDebugUtilsLabelEXT
++#define vkQueueBindSparse sw2prdp_vkQueueBindSparse
++#define vkQueueEndDebugUtilsLabelEXT sw2prdp_vkQueueEndDebugUtilsLabelEXT
++#define vkQueueInsertDebugUtilsLabelEXT sw2prdp_vkQueueInsertDebugUtilsLabelEXT
++#define vkQueuePresentKHR sw2prdp_vkQueuePresentKHR
++#define vkQueueSetPerformanceConfigurationINTEL sw2prdp_vkQueueSetPerformanceConfigurationINTEL
++#define vkQueueSubmit sw2prdp_vkQueueSubmit
++#define vkQueueSubmit2 sw2prdp_vkQueueSubmit2
++#define vkQueueSubmit2KHR sw2prdp_vkQueueSubmit2KHR
++#define vkQueueWaitIdle sw2prdp_vkQueueWaitIdle
++#define vkRegisterDeviceEventEXT sw2prdp_vkRegisterDeviceEventEXT
++#define vkRegisterDisplayEventEXT sw2prdp_vkRegisterDisplayEventEXT
++#define vkReleaseDisplayEXT sw2prdp_vkReleaseDisplayEXT
++#define vkReleaseFullScreenExclusiveModeEXT sw2prdp_vkReleaseFullScreenExclusiveModeEXT
++#define vkReleasePerformanceConfigurationINTEL sw2prdp_vkReleasePerformanceConfigurationINTEL
++#define vkReleaseProfilingLockKHR sw2prdp_vkReleaseProfilingLockKHR
++#define vkResetCommandBuffer sw2prdp_vkResetCommandBuffer
++#define vkResetCommandPool sw2prdp_vkResetCommandPool
++#define vkResetDescriptorPool sw2prdp_vkResetDescriptorPool
++#define vkResetEvent sw2prdp_vkResetEvent
++#define vkResetFences sw2prdp_vkResetFences
++#define vkResetQueryPool sw2prdp_vkResetQueryPool
++#define vkResetQueryPoolEXT sw2prdp_vkResetQueryPoolEXT
++#define vkSetBufferCollectionBufferConstraintsFUCHSIA sw2prdp_vkSetBufferCollectionBufferConstraintsFUCHSIA
++#define vkSetBufferCollectionImageConstraintsFUCHSIA sw2prdp_vkSetBufferCollectionImageConstraintsFUCHSIA
++#define vkSetDebugUtilsObjectNameEXT sw2prdp_vkSetDebugUtilsObjectNameEXT
++#define vkSetDebugUtilsObjectTagEXT sw2prdp_vkSetDebugUtilsObjectTagEXT
++#define vkSetDeviceMemoryPriorityEXT sw2prdp_vkSetDeviceMemoryPriorityEXT
++#define vkSetEvent sw2prdp_vkSetEvent
++#define vkSetHdrMetadataEXT sw2prdp_vkSetHdrMetadataEXT
++#define vkSetLocalDimmingAMD sw2prdp_vkSetLocalDimmingAMD
++#define vkSetPrivateData sw2prdp_vkSetPrivateData
++#define vkSetPrivateDataEXT sw2prdp_vkSetPrivateDataEXT
++#define vkSignalSemaphore sw2prdp_vkSignalSemaphore
++#define vkSignalSemaphoreKHR sw2prdp_vkSignalSemaphoreKHR
++#define vkSubmitDebugUtilsMessageEXT sw2prdp_vkSubmitDebugUtilsMessageEXT
++#define vkTrimCommandPool sw2prdp_vkTrimCommandPool
++#define vkTrimCommandPoolKHR sw2prdp_vkTrimCommandPoolKHR
++#define vkUninitializePerformanceApiINTEL sw2prdp_vkUninitializePerformanceApiINTEL
++#define vkUnmapMemory sw2prdp_vkUnmapMemory
++#define vkUpdateDescriptorSetWithTemplate sw2prdp_vkUpdateDescriptorSetWithTemplate
++#define vkUpdateDescriptorSetWithTemplateKHR sw2prdp_vkUpdateDescriptorSetWithTemplateKHR
++#define vkUpdateDescriptorSets sw2prdp_vkUpdateDescriptorSets
++#define vkUpdateVideoSessionParametersKHR sw2prdp_vkUpdateVideoSessionParametersKHR
++#define vkWaitForFences sw2prdp_vkWaitForFences
++#define vkWaitForPresentKHR sw2prdp_vkWaitForPresentKHR
++#define vkWaitSemaphores sw2prdp_vkWaitSemaphores
++#define vkWaitSemaphoresKHR sw2prdp_vkWaitSemaphoresKHR
++#define vkWriteAccelerationStructuresPropertiesKHR sw2prdp_vkWriteAccelerationStructuresPropertiesKHR
++#define vkWriteMicromapsPropertiesEXT sw2prdp_vkWriteMicromapsPropertiesEXT
 +#endif
- m64p_error main_run(void)
- {
-+    SW2T("n64: main_run");
-     size_t i, k;
-     uint32_t count_per_op;
-     uint32_t count_per_op_denom_pot;
-@@ -1704,12 +1711,14 @@ m64p_error main_run(void)
-                 dd_rom_size,
-                 &dd_disk, dd_idisk);
+diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/vulkan/context.cpp b/mupen64plus-video-paraLLEl/parallel-rdp/vulkan/context.cpp
+index e16a421..0aa1306 100644
+--- a/mupen64plus-video-paraLLEl/parallel-rdp/vulkan/context.cpp
++++ b/mupen64plus-video-paraLLEl/parallel-rdp/vulkan/context.cpp
+@@ -27,9 +27,10 @@
+ #include <algorithm>
+ #include <string.h>
  
-+    SW2T("n64: init_device done");
-     // Attach rom to plugins
-     failure_rval = M64ERR_PLUGIN_FAIL;
-     if (!gfx.romOpen())
-     {
-         goto on_gfx_open_failure;
-     }
-+    SW2T("n64: gfx romOpen done");
-     if (!audio.romOpen())
-     {
-         goto on_audio_open_failure;
-@@ -1725,9 +1734,11 @@ m64p_error main_run(void)
-     g_EmulatorRunning = 1;
-     StateChanged(M64CORE_EMU_STATE, M64EMU_RUNNING);
+-#ifndef _WIN32
++#if defined(__SWITCH__)
++#elif !defined(_WIN32)
+ #include <dlfcn.h>
+-#elif defined(_WIN32)
++#else
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
+ #endif
+@@ -90,7 +91,10 @@ bool Context::init_loader(PFN_vkGetInstanceProcAddr addr)
  
-+    SW2T("n64: poweron");
-     poweron_device(&g_dev);
-+    SW2T("n64: pif hle");
-     pif_bootrom_hle_execute(&g_dev.r4300);
--
-+    SW2T("n64: run_device");
-     run_device(&g_dev);
- 
-     /* release gb_carts */
+ 	if (!addr)
+ 	{
+-#ifndef _WIN32
++#if defined(__SWITCH__)
++		// No system loader: the libretro frontend passes vkGetInstanceProcAddr.
++		return false;
++#elif !defined(_WIN32)
+ 		static void *module;
+ 		if (!module)
+ 		{

@@ -34,3 +34,15 @@ libretro-super libnx recipe, patches it and builds the static archive. mgba is C
 `switch2/libounce.cmake` as the toolchain file with `-DBUILD_LIBRETRO=ON -DLIBRETRO_STATIC=ON`.
 
 Tested on hardware: picodrive, fceumm, mgba.
+
+### N64 (Mupen64Plus-Next): in testing
+
+Tested on hardware with Paper Mario. On Switch 2 the core defaults to ParaLLEl-RDP on Vulkan
+with the ParaLLEl-RSP JIT, and synchronous RDP off (waiting on the GPU every frame drops audio).
+GLideN64 is still in the core options; it needs `video_driver = "gl"` for this core, in
+`/retroarch/config/Mupen64Plus-Next/Mupen64Plus-Next.cfg`.
+
+- The N64 dynarec and ParaLLEl-RSP's Lightning JIT write code to the staging view of a libounce
+  JIT and publish it to the executable view.
+- volk's function pointers are renamed (`volk_sw2_rename.h`) so they do not collide with the
+  Vulkan entry points libounce links into the frontend.

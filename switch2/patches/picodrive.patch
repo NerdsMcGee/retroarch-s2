@@ -1,8 +1,8 @@
 diff --git a/Makefile.libretro b/Makefile.libretro
-index af871cb..9bc855e 100644
+index af871cb..7c68425 100644
 --- a/Makefile.libretro
 +++ b/Makefile.libretro
-@@ -324,6 +324,18 @@ else ifeq ($(platform), libnx)
+@@ -324,6 +324,19 @@ else ifeq ($(platform), libnx)
  	STATIC_LINKING=1
  	STATIC_LINKING_LINK = 1
  
@@ -13,6 +13,7 @@ index af871cb..9bc855e 100644
 +	CFLAGS += -O3 -fomit-frame-pointer -ffast-math -I$(DEVKITPRO)/libounce/include/ -fPIE -Wl,--allow-multiple-definition
 +	CFLAGS += -specs=$(DEVKITPRO)/libounce/switch.specs
 +	CFLAGS += -D__SWITCH__ -DHAVE_LIBNX -D__SWITCH2__
++	CFLAGS += -I$(DEVKITPRO)/portlibs/switch2/include
 +	CFLAGS += -DARM -D__aarch64__=1 -mtp=soft -ffast-math $(SWITCH2_CPU) -ffunction-sections
 +	CFLAGS += -Ifrontend/switch -ftree-vectorize
 +	STATIC_LINKING=1
@@ -21,3 +22,220 @@ index af871cb..9bc855e 100644
  # QNX
  else ifeq ($(platform), qnx)
  	ARCH = arm
+diff --git a/cpu/drc/cmn.h b/cpu/drc/cmn.h
+index 9c041e7..2004483 100644
+--- a/cpu/drc/cmn.h
++++ b/cpu/drc/cmn.h
+@@ -3,6 +3,18 @@
+ 
+ extern u8 *tcache;
+ 
++#ifdef __SWITCH2__
++/* Switch 2: code runs from the Jit's executable view and is written through
++ * its staging view, drc_wofs bytes away; a written range is made runnable
++ * by drc_publish() (platform/libretro/libretro.c). */
++#include <stddef.h>
++extern ptrdiff_t drc_wofs;
++void drc_publish(void *start, void *end);
++#define DRC_W(p) ((void *)((u8 *)(p) + drc_wofs))
++#else
++#define DRC_W(p) ((void *)(p))
++#endif
++
+ void drc_cmn_init(void);
+ void drc_cmn_cleanup(void);
+ 
+diff --git a/cpu/drc/emit_arm64.c b/cpu/drc/emit_arm64.c
+index 71b4c1b..3792470 100644
+--- a/cpu/drc/emit_arm64.c
++++ b/cpu/drc/emit_arm64.c
+@@ -336,7 +336,7 @@ enum { AM_IDX, AM_IDXPOST, AM_IDXREG, AM_IDXPRE };
+ // XXX: tcache_ptr type for SVP and SH2 compilers differs..
+ #define EMIT_PTR(ptr, x) \
+ 	do { \
+-		*(u32 *)(ptr) = x; \
++		*(u32 *)DRC_W(ptr) = x; \
+ 		ptr = (void *)((u8 *)(ptr) + sizeof(u32)); \
+ 	} while (0)
+ 
+@@ -601,7 +601,7 @@ static void emith_move_imm64(int r, int wx, int64_t imm)
+ } while (0)
+ #define emith_move_r_imm_s8_patch(ptr, imm) do { \
+ 	u32 *ptr_ = (u32 *)ptr; \
+-	int r_ = *ptr_ & 0x1f; \
++	int r_ = *(u32 *)DRC_W(ptr_) & 0x1f; \
+ 	if ((s8)(imm) < 0) \
+ 		EMIT_PTR(ptr_, A64_MOVN_IMM(r_, ~(s8)(imm), 0)); \
+ 	else \
+@@ -1013,9 +1013,17 @@ static void emith_ldst_offs(int sz, int rd, int rn, int o9, int ld, int mode)
+ 
+ // branching; NB: A64 B.cond has only +/- 1MB range
+ 
++#define emith_branch_far(target) \
++	((uintptr_t)(target) - (uintptr_t)tcache_ptr + 0x8000000 >= 0x10000000)
++
+ #define emith_jump(target) do {\
+-	u32 disp_ = (u8 *)target - (u8 *)tcache_ptr; \
+-	EMIT(A64_B(disp_ & 0x0fffffff)); \
++	if (emith_branch_far(target)) { \
++		emith_move_r_ptr_imm(16, target); \
++		EMIT(A64_BR(16)); \
++	} else { \
++		u32 disp_ = (u8 *)target - (u8 *)tcache_ptr; \
++		EMIT(A64_B(disp_ & 0x0fffffff)); \
++	} \
+ } while (0)
+ 
+ #define emith_jump_patchable(target) \
+@@ -1035,10 +1043,11 @@ static void emith_ldst_offs(int sz, int rd, int rn, int o9, int ld, int mode)
+ #define emith_jump_patch(ptr, target, pos) do { \
+ 	u32 *ptr_ = (u32 *)ptr; \
+ 	u32 disp_ = (u8 *)target - (u8 *)ptr, mask_; \
+-	if ((*ptr_ & 0xff000000) == 0x54000000) \
++	u32 old_ = *(u32 *)DRC_W(ptr_); \
++	if ((old_ & 0xff000000) == 0x54000000) \
+ 		mask_ = 0xff00001f, disp_ <<= 5; /* B.cond, range 21 bit */ \
+ 	else	mask_ = 0xfc000000;		 /* B[L], range 28 bit */ \
+-	EMIT_PTR(ptr_, (*ptr_ & mask_) | ((disp_ >> 2) & ~mask_)); \
++	EMIT_PTR(ptr_, (old_ & mask_) | ((disp_ >> 2) & ~mask_)); \
+ 	if ((void *)(pos) != NULL) *(u8 **)(pos) = (u8 *)(ptr_-1); \
+ } while (0)
+ 
+@@ -1064,8 +1073,13 @@ static void emith_ldst_offs(int sz, int rd, int rn, int o9, int ld, int mode)
+ } while (0)
+ 
+ #define emith_call(target) do { \
+-	u32 disp_ = (u8 *)target - (u8 *)tcache_ptr; \
+-	EMIT(A64_BL(disp_ & 0x0fffffff)); \
++	if (emith_branch_far(target)) { \
++		emith_move_r_ptr_imm(16, target); \
++		EMIT(A64_BLR(16)); \
++	} else { \
++		u32 disp_ = (u8 *)target - (u8 *)tcache_ptr; \
++		EMIT(A64_BL(disp_ & 0x0fffffff)); \
++	} \
+ } while (0)
+ #define emith_call_cond(cond, target) \
+ 	emith_call(target)
+@@ -1118,8 +1132,15 @@ static void emith_ldst_offs(int sz, int rd, int rn, int o9, int ld, int mode)
+ #define emith_pool_commit(j)	/**/
+ #define emith_insn_ptr()	((u8 *)tcache_ptr)
+ #define	emith_flush()		/**/
++#ifdef __SWITCH2__
++/* every change is published, the patch of a single word as well: the
++ * executable view is a copy, not the same memory seen through a cache */
++#define host_instructions_updated(base, end, force) \
++	drc_publish(base, end)
++#else
+ #define host_instructions_updated(base, end, force) \
+ 	do { if (force) __builtin___clear_cache(base, end); } while (0)
++#endif
+ #define	emith_update_cache()	/**/
+ #define emith_rw_offs_max()	0x1ff
+ #define emith_uext_ptr(r)	/**/
+diff --git a/cpu/sh2/compiler.c b/cpu/sh2/compiler.c
+index 4e19227..d555e91 100644
+--- a/cpu/sh2/compiler.c
++++ b/cpu/sh2/compiler.c
+@@ -858,12 +858,12 @@ static void dr_block_unlink(struct block_link *bl, int emit_jump)
+         emith_jump_patch(jump, sh2_drc_dispatcher, &jump);
+       } else if (bl->type == BL_LDJMP) { // restore: load pc, jump @dispatcher
+         // inlined: @jump load target_pc, far jump to dispatcher
+-        memcpy(jump, bl->jdisp, emith_jump_at_size());
++        memcpy(DRC_W(jump), bl->jdisp, emith_jump_at_size());
+         jsz = emith_jump_at_size();
+       } else if (bl->type == BL_JCCBLX) { // jump cond @blx; @blx: load pc, jump
+         // via blx: @jump near jumpcc to blx; @blx load target_pc, far jump
+         emith_jump_patch(bl->jump, bl->blx, &jump);
+-        memcpy(bl->blx, bl->jdisp, emith_jump_at_size());
++        memcpy(DRC_W(bl->blx), bl->jdisp, emith_jump_at_size());
+         host_instructions_updated(bl->blx, (char *)bl->blx + emith_jump_at_size(), 1);
+       } else {
+         printf("unknown BL type %d\n", bl->type);
+@@ -5226,7 +5226,7 @@ end_op:
+   // fill blx backup; do this last to backup final patched code
+   for (i = 0; i < block->entry_count; i++)
+     for (bl = block->entryp[i].o_links; bl; bl = bl->o_next)
+-      memcpy(bl->jdisp, bl->blx ? bl->blx : bl->jump, emith_jump_at_size());
++      memcpy(bl->jdisp, DRC_W(bl->blx ? bl->blx : bl->jump), emith_jump_at_size());
+ 
+   ring_alloc(&tcache_ring[tcache_id], tcache_ptr - block_entry_ptr);
+   host_instructions_updated(block_entry_ptr, tcache_ptr, 1);
+diff --git a/platform/libretro/libretro.c b/platform/libretro/libretro.c
+index 207350d..3c8de3f 100644
+--- a/platform/libretro/libretro.c
++++ b/platform/libretro/libretro.c
+@@ -484,11 +484,60 @@ void plat_munmap(void *ptr, size_t size)
+ }
+ #endif
+ 
++#ifdef __SWITCH2__
++#include <ouncehen.h>
++static Jit drc_jit;
++static int drc_jit_state;  /* 0 not made, 1 made, -1 failed */
++ptrdiff_t drc_wofs;
++void drc_publish(void *start, void *end)
++{
++   uintptr_t rx = (uintptr_t)drc_jit.rx_addr;
++   uintptr_t s = (uintptr_t)start & ~(uintptr_t)63;
++   uintptr_t e = ((uintptr_t)end + 63) & ~(uintptr_t)63;
++   OuncehenJitRange r;
++   Result rc;
++   if (drc_jit_state != 1)
++      return;
++   if (s < rx)
++      s = rx;
++   if (e > rx + drc_jit.size)
++      e = rx + drc_jit.size;
++   if (e <= s)
++      return;
++   r.offset = s - rx;
++   r.size   = e - s;
++   rc = ouncehenJitPublishRanges(&drc_jit, &r, 1);
++   if (R_FAILED(rc))
++   {
++      if (log_cb)
++         log_cb(RETRO_LOG_ERROR, "ouncehenJitPublishRanges failed: %08x\n", (unsigned)rc);
++      abort();
++   }
++}
++#endif
++
+ // if NULL is returned, static buffer is used
+ void *plat_mem_get_for_drc(size_t size)
+ {
+    void *mem = NULL;
+-#if defined VITA
++#if defined(__SWITCH2__)
++   /* The code memory is made once and kept: code is written to the staging
++    * view and run from the executable one (drc_wofs apart) */
++   if (drc_jit_state == 0)
++   {
++      Result rc = jitCreate(&drc_jit, size);
++      drc_jit_state = R_SUCCEEDED(rc) ? 1 : -1;
++      if (drc_jit_state == 1 && drc_jit.is_executable)
++         jitTransitionToWritable(&drc_jit);
++      if (drc_jit_state != 1 && log_cb)
++         log_cb(RETRO_LOG_ERROR, "jitCreate failed: %08x\n", (unsigned)rc);
++   }
++   if (drc_jit_state == 1)
++   {
++      drc_wofs = (u8 *)drc_jit.rw_addr - (u8 *)drc_jit.rx_addr;
++      mem = drc_jit.rx_addr;
++   }
++#elif defined VITA
+    sceKernelGetMemBlockBase(sceBlock, &mem);
+ #elif defined HW_WUP
+    // For WiiU, a slice of RWX memory left from the exploit is used, see:
+@@ -504,7 +553,10 @@ void *plat_mem_get_for_drc(size_t size)
+ int plat_mem_set_exec(void *ptr, size_t size)
+ {
+    int ret = -1;
+-#ifdef _WIN32
++#if defined(__SWITCH2__)
++   /* executable already: the Jit's rx view */
++   ret = 0;
++#elif defined(_WIN32)
+    DWORD oldProtect = 0;
+    ret = VirtualProtect(ptr, size, PAGE_EXECUTE_READWRITE, &oldProtect);
+    if (ret == 0 && log_cb)

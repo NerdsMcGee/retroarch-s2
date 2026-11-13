@@ -56,12 +56,55 @@ Generated code is written to a libounce `Jit`'s staging view and made runnable w
 
 ## Cores
 
+The release builds 22 cores. Each one is its own NRO, `/retroarch/cores/<name>_libretro_libnx.nro`.
+
 `switch2/patches/` holds one patch per core (`git apply` inside the core checkout). Each adds a `libounce` platform, and adds Switch 2 code where needed. Flycast's patch is for libretro/flycast at 6db95c1.
 
 - `switch2/build_core.py <name>` builds a core's static archive.
 - mgba is CMake-only: build it with the devkit's `Switch2.cmake`.
+- `switch2/rebuild_release.sh` builds all 22 and the frontend.
 
-Tested on hardware:
-- FCEUmm, Mesen, Snes9x 2010, Genesis Plus GX, PicoDrive (with 32X)
-- PCSX ReARMed, Flycast, Mupen64Plus-Next, Beetle PCE Fast
-- mGBA, VBA Next and Beetle SuperGrafx boot.
+### Built cores and hardware testing
+
+**Played** means a game was played on a Switch 2. **Boots** means a game started but wasn't played. **Not tested** means the core is built but hasn't been run yet.
+
+- **NES**
+  - FCEUmm (`fceumm`): played. Super Mario Bros. 3
+  - Mesen (`mesen`): played. Super Mario Bros. 3
+  - Nestopia (`nestopia`): not tested
+  - QuickNES (`quicknes`): not tested
+- **SNES**
+  - Snes9x 2010 (`snes9x2010`): played. Star Fox, Yoshi's Island, Super Mario RPG
+  - Snes9x (`snes9x`): not tested
+- **Game Boy / Game Boy Color**
+  - Gambatte (`gambatte`): not tested
+  - Gearboy (`gearboy`): not tested
+  - SameBoy (`sameboy`): not tested
+- **Game Boy Advance**
+  - mGBA (`mgba`, also GB/GBC): played. The Legend of Zelda: The Minish Cap, from a fresh install
+  - VBA Next (`vba_next`): boots. The Minish Cap
+- **Mega Drive / Genesis, 32X, Master System, Game Gear**
+  - Genesis Plus GX (`genesis_plus_gx`): played. Vectorman, OutRun, Golden Axe, Dragon Crystal
+  - PicoDrive (`picodrive`, with the SH2 dynarec for 32X): played. Vectorman; Metal Head on 32X at full speed
+  - Gearsystem (`gearsystem`, Master System / Game Gear / SG-1000): not tested
+- **PC Engine / TurboGrafx-16**
+  - Beetle PCE Fast (`mednafen_pce_fast`): played. Knight Rider Special
+  - Beetle SuperGrafx (`mednafen_supergrafx`): boots. Knight Rider Special
+- **Atari**
+  - Stella (`stella`, 2600): not tested
+  - ProSystem (`prosystem`, 7800): not tested
+  - Handy (`handy`, Lynx): not tested
+- **PlayStation**
+  - PCSX ReARMed (`pcsx_rearmed`, dynarec): played. Gran Turismo with races; Metal Gear Solid
+- **Nintendo 64**
+  - Mupen64Plus-Next (`mupen64plus_next`, ParaLLEl-RDP on Vulkan): played. Paper Mario
+- **Dreamcast**
+  - Flycast (`flycast`, JIT, Vulkan renderer): played. Sonic Adventure, Phantasy Star Online Ver. 2
+
+So far 10 cores are played, 2 boot, and 10 are not tested.
+
+Fixed during testing:
+- PCSX ReARMed: Gran Turismo froze while loading a race. Code it ran from the stack went stale.
+- PicoDrive: 32X games crashed. The SH2 dynarec now runs on the JIT.
+- Mupen64Plus-Next: Paper Mario's textures were wrong.
+- All cores: the first game started after any download (on a fresh install, RetroArch's offer to download controller profiles) crashed before the core ran. Fixed in v0.2.1.

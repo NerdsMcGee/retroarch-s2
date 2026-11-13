@@ -316,7 +316,6 @@ static void frontend_switch_deinit(void *data)
 {
    (void)data;
 
-   nifmExit();
    if (hosversionBefore(8, 0, 0))
    {
       pcvSetClockRate(PcvModule_CpuBus, 1020000000);
@@ -332,10 +331,6 @@ static void frontend_switch_deinit(void *data)
 #endif
       clkrstExit();
    }
-
-#if defined(SWITCH) && defined(NXLINK)
-   socketExit();
-#endif
 
    if (psmInitialized)
        psmExit();
@@ -578,6 +573,17 @@ error:
 static void frontend_switch_shutdown(bool unused)
 {
    (void)unused;
+
+   /* Here rather than in deinit: main_exit() runs this after
+    * task_queue_deinit() and net_http_deinit(), the last users of the
+    * sockets. A transfer still in flight at exit leaves a pooled
+    * connection that net_http_deinit() closes; with the socket service
+    * already gone, that close crashed the process on its way to the
+    * next NRO. */
+#if defined(SWITCH) && defined(NXLINK)
+   socketExit();
+#endif
+   nifmExit();
 }
 
 /* runloop_get_system_info isnt initialized that early.. */

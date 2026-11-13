@@ -20,6 +20,7 @@
 #include <ctype.h>
 
 #include <libretro.h>
+#include <errno.h>
 #include <file/config_file.h>
 #include <file/file_path.h>
 #include <compat/strl.h>
@@ -490,6 +491,9 @@ static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_METAL;
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_D3D11;
 #elif defined(HAVE_GXM)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_GXM;
+#elif defined(__SWITCH2__) && defined(HAVE_VULKAN)
+/* Switch 2: Vulkan (OunceVK) is the tested driver; GLES is the fallback */
+static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_VULKAN;
 #elif defined(HAVE_OPENGL) || defined(HAVE_OPENGLES) || defined(HAVE_PSGL)
 static const enum video_driver_enum VIDEO_DEFAULT_DRIVER = VIDEO_GL;
 #elif defined(HAVE_OPENGL_CORE) && !defined(__HAIKU__)
@@ -1331,6 +1335,8 @@ static void config_keychain_set(config_file_t *conf,
 struct defaults g_defaults;
 
 static settings_t *config_st = NULL;
+
+static void config_report_unreadable(const char *path);
 
 settings_t *config_get_ptr(void)
 {
@@ -8746,8 +8752,18 @@ static void config_parse_file(void)
 
    if (!config_load_file(config_path, config_st))
    {
-      RARCH_ERR("[Config] Config not found at: \"%s\".\n",
-            config_path);
+      if (config_path && *config_path && path_is_valid(config_path))
+      {
+         /* Running on the built-in defaults: saving them on exit would
+          * replace the config that is there */
+         config_report_unreadable(config_path);
+         configuration_set_bool(config_st,
+               config_st->bools.config_save_on_exit, false);
+         RARCH_ERR("[Config] Running on the built-in defaults; the config will not be saved on exit.\n");
+      }
+      else
+         RARCH_ERR("[Config] Config not found at: \"%s\".\n",
+               config_path);
 #ifdef ANDROID
       /* No config at all: a fresh install's first start.  A config
        * that exists but would not open is not one, and keeps the
@@ -11560,6 +11576,23 @@ static bool config_file_salamander_get_path(char *s, size_t len)
    return (s && *s);
 }
 
+/* A config that exists but would not open: say why. The second open
+ * gives the reason it fails now, or none if the failure has passed. */
+static void config_report_unreadable(const char *path)
+{
+   int err  = 0;
+   FILE *fp = fopen(path, "rb");
+
+   if (!fp)
+      err = errno;
+   else
+      fclose(fp);
+
+   RARCH_ERR("[Config] \"%s\" exists (%lld bytes) but could not be read: %s.\n",
+         path, (long long)path_get_size(path),
+         err ? strerror(err) : "it opens now");
+}
+
 void config_load_file_salamander(void)
 {
    char config_path[PATH_MAX_LENGTH];
@@ -11574,7 +11607,11 @@ void config_load_file_salamander(void)
 
    /* Open config file */
    if (!(config = config_file_new_from_path_to_string(config_path)))
+   {
+      if (path_is_valid(config_path))
+         config_report_unreadable(config_path);
       return;
+   }
 
    /* Read 'libretro_path' value and update
     * RARCH_PATH_CORE */

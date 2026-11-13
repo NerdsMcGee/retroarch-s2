@@ -43,21 +43,41 @@ index cd53109..18ef686 100644
  # Nintendo Switch (libnx)
  else ifeq ($(platform), libnx)
     TARGET := $(TARGET_NAME)_libretro_$(platform).a
+diff --git a/libpcsxcore/new_dynarec/emu_if.c b/libpcsxcore/new_dynarec/emu_if.c
+index a6333f2..18fa657 100644
+--- a/libpcsxcore/new_dynarec/emu_if.c
++++ b/libpcsxcore/new_dynarec/emu_if.c
+@@ -314,7 +314,13 @@ static void clear_local_cache(void)
+ 	if (ndrc_g.thread.dirty_start) {
+ 		// see "Ensuring the visibility of updates to instructions"
+ 		// in v7/v8 reference manuals (DDI0406, DDI0487 etc.)
+-#if defined(__aarch64__) || defined(HAVE_ARMV8)
++#if defined(__SWITCH2__)
++		// kaiHEN invalidates the publishing thread's instruction cache
++		// only: this thread invalidates what the compile thread wrote
++		extern void sw2_icache_sync(void *start, void *end);
++		sw2_icache_sync(ndrc_g.thread.dirty_start, ndrc_g.thread.dirty_end);
++		__asm__ volatile("isb");
++#elif defined(__aarch64__) || defined(HAVE_ARMV8)
+ 		// the actual clean/invalidate is broadcast to all cores,
+ 		// the manual only prescribes an isb
+ 		__asm__ volatile("isb");
 diff --git a/libpcsxcore/new_dynarec/new_dynarec.c b/libpcsxcore/new_dynarec/new_dynarec.c
-index fb99df6..65c695c 100644
+index fb99df6..b00e6ef 100644
 --- a/libpcsxcore/new_dynarec/new_dynarec.c
 +++ b/libpcsxcore/new_dynarec/new_dynarec.c
-@@ -35,6 +35,43 @@
+@@ -35,6 +35,44 @@
  #include <switch.h>
  static Jit g_jit;
  #endif
 +#ifdef __SWITCH2__
 +/* Switch 2 (libounce): code is written to the staging (rw) view and made
 + * runnable by publishing the written range to the rx view, which copies it
-+ * and invalidates the instruction cache (broadcast to all cores). The libnx
-+ * path's jitTransitionToExecutable() would publish the whole staging buffer
-+ * on every write. */
-+#include <ouncehen.h>
++ * and invalidates the publishing thread's instruction cache; another thread
++ * that runs it invalidates the range itself first (sw2_icache_sync). The
++ * libnx path's jitTransitionToExecutable() would publish the whole staging
++ * buffer on every write. */
++#include <kaihen.h>
 +void SysPrintf(const char *fmt, ...);
 +/* Publishes come from the compile thread and the emulator's thread: one at
 + * a time. */
@@ -78,12 +98,12 @@ index fb99df6..65c695c 100644
 +  if (e > rw + g_jit.size) e = rw + g_jit.size;
 +  if (e <= s)
 +    return;
-+  OuncehenJitRange r = { (u64)(s - rw), (u64)(e - s) };
++  KaihenJitRange r = { (u64)(s - rw), (u64)(e - s) };
 +  mutexLock(&sw2_pub_lock);
-+  Result rc = ouncehenJitPublishRanges(&g_jit, &r, 1);
++  Result rc = kaihenJitPublishRanges(&g_jit, &r, 1);
 +  mutexUnlock(&sw2_pub_lock);
 +  if (R_FAILED(rc)) {
-+    SysPrintf("ouncehenJitPublishRanges failed: %08x\n", (unsigned)rc);
++    SysPrintf("kaihenJitPublishRanges failed: %08x\n", (unsigned)rc);
 +    abort();
 +  }
 +}
@@ -91,7 +111,23 @@ index fb99df6..65c695c 100644
  
  #include "new_dynarec_config.h"
  #include "../psxhle.h"
-@@ -675,6 +712,8 @@ static void mprotect_w_x(void *start, void *end, int is_x)
+@@ -155,6 +193,15 @@ static char ndrc_bss[((sizeof(*ndrc) + 65535) & ~65535) + 65536];
+ # endif
+ static long ndrc_write_ofs;
+ #define NDRC_WRITE_OFFSET(x) (void *)((char *)(x) + ndrc_write_ofs)
++#ifdef __SWITCH2__
++/* The emulator's thread, before it runs code the compile thread published:
++ * @start/@end are staging (rw) addresses, as end_tcache_write() keeps them */
++void sw2_icache_sync(void *start, void *end)
++{
++  if (end > start)
++    armICacheInvalidate((char *)start - ndrc_write_ofs, (char *)end - (char *)start);
++}
++#endif
+ #else
+ #define NDRC_WRITE_OFFSET(x) (x)
+ #endif
+@@ -675,6 +722,8 @@ static void mprotect_w_x(void *start, void *end, int is_x)
      sceKernelCloseVMDomain();
    else
      sceKernelOpenVMDomain();
@@ -100,7 +136,7 @@ index fb99df6..65c695c 100644
    #elif defined(HAVE_LIBNX)
    Result rc;
    // check to avoid the full flush in jitTransitionToExecutable()
-@@ -714,6 +753,8 @@ void new_dyna_clear_cache(void *start, void *end)
+@@ -714,6 +763,8 @@ void new_dyna_clear_cache(void *start, void *end)
      ctr_clear_cache_range(start, end);
    else
      ctr_clear_cache();
@@ -109,7 +145,7 @@ index fb99df6..65c695c 100644
    #elif defined(HAVE_LIBNX)
    if (g_jit.type == JitType_CodeMemory) {
      armDCacheClean(start, len);
-@@ -745,8 +786,13 @@ static void end_tcache_write(void *start, void *end, int clear_cache)
+@@ -745,8 +796,13 @@ static void end_tcache_write(void *start, void *end, int clear_cache)
    if ((size_t)ndrc_g.thread.dirty_end < (size_t)end)
      ndrc_g.thread.dirty_end = end;
  #endif
@@ -123,7 +159,7 @@ index fb99df6..65c695c 100644
  
    mprotect_w_x(start, end, 1);
  }
-@@ -1649,7 +1695,7 @@ static void *get_trampoline(const void *f)
+@@ -1649,7 +1705,7 @@ static void *get_trampoline(const void *f)
      start_tcache_write(&tramp->f[i], &tramp->f[i + 1]);
      tramp->f[i] = f;
      end_tcache_write(&tramp->f[i], &tramp->f[i + 1], 1);
@@ -132,7 +168,7 @@ index fb99df6..65c695c 100644
      // invalidate the RX mirror (unsure if necessary, but just in case...)
      armDCacheFlush(&ndrc->tramp.f[i], sizeof(ndrc->tramp.f[i]));
  #endif
-@@ -3616,8 +3662,15 @@ static void do_store_smc_check(struct compile_state *st, int i,
+@@ -3616,8 +3672,15 @@ static void do_store_smc_check(struct compile_state *st, int i,
    //if (i_regs->waswritten & (1<<dops[i].rs1))
    //  return;
    // (naively) assume nobody will run code from stack
@@ -148,7 +184,7 @@ index fb99df6..65c695c 100644
  
    int j, imm_maxdiff = 32, imm_min = cinfo[i].imm, imm_max = cinfo[i].imm, count = 1;
    if (i < st->slen - 1 && dops[i+1].is_store && dops[i+1].rs1 == dops[i].rs1
-@@ -6707,10 +6760,20 @@ void new_dynarec_init(void)
+@@ -6707,10 +6770,20 @@ void new_dynarec_init(void)
    if (R_FAILED(rc))
      SysPrintf("jitCreate failed: %08x\n", rc);
    SysPrintf("jitCreate: RX: %p RW: %p type: %d\n", g_jit.rx_addr, g_jit.rw_addr, g_jit.type);

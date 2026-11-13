@@ -166,7 +166,7 @@ LDFLAGS	=	-specs=$(DEVKITPRO)/libounce/switch.specs $(ARCH) -Wl,--allow-multiple
 # add things from Makefile.common
 CFLAGS += $(DEF_FLAGS)
 
-LIBS := -louncehen -lswresample -lavformat -lavcodec -lavutil -lswscale -lstdc++ -lbz2 -lpng -lz -lnx -lvpx -lopus -llzma -lnx -lm
+LIBS := -lkaihen -lswresample -lavformat -lavcodec -lavutil -lswscale -lstdc++ -lbz2 -lpng -lz -lnx -lvpx -lopus -llzma -lnx -lm
 
 ifeq ($(HAVE_OPENGL), 1)
   LIBS := -lGLESv2 -lEGL -lglapi -ldrm_nouveau $(LIBS)

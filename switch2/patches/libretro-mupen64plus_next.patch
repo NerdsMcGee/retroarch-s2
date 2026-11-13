@@ -664,7 +664,7 @@ index fb39aa9..f731e17 100644
      {
          CORE_NAME "-parallel-rdp-overscan",
 diff --git a/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c b/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
-index 98dea54..e9cfe45 100644
+index 98dea54..baf3e9d 100644
 --- a/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
 +++ b/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
 @@ -261,8 +261,29 @@ static uintptr_t jump_table_symbols[] = {
@@ -688,8 +688,8 @@ index 98dea54..e9cfe45 100644
 +        if (s < rx) s = rx;
 +        if (e > rx + sw2_n64_jit.size) e = rx + sw2_n64_jit.size;
 +        if (e <= s) return;
-+        OuncehenJitRange r = { (u64)(s - rx), (u64)(e - s) };
-+        if (R_FAILED(ouncehenJitPublishRanges(&sw2_n64_jit, &r, 1)))
++        KaihenJitRange r = { (u64)(s - rx), (u64)(e - s) };
++        if (R_FAILED(kaihenJitPublishRanges(&sw2_n64_jit, &r, 1)))
 +            abort();
 +        return;
 +    }
@@ -708,7 +708,7 @@ index 98dea54..e9cfe45 100644
 +#endif
  }
 diff --git a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
-index 1e8f261..97d2c4b 100644
+index 1e8f261..049fefb 100644
 --- a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
 +++ b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
 @@ -56,7 +56,14 @@
@@ -718,7 +718,7 @@ index 1e8f261..97d2c4b 100644
 -#ifndef HAVE_LIBNX
 +#if defined(__SWITCH2__)
 +#include <switch.h>
-+#include <ouncehen.h>
++#include <kaihen.h>
 +/* Switch 2: code is written to the staging (rw) view and made runnable by
 +   publishing it to the rx view; see cache_flush() in arm64/assem_arm64.c */
 +Jit sw2_n64_jit;
@@ -776,13 +776,13 @@ index 1e8f261..97d2c4b 100644
      if (munmap (base_addr_rx, 1<<TARGET_SIZE_2) < 0) {DebugMessage(M64MSG_ERROR, "munmap() failed");}
    #else
 diff --git a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp b/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
-index 5100e60..1d9bdd0 100644
+index 5100e60..d806e61 100644
 --- a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
 +++ b/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
 @@ -1,3 +1,78 @@
 +#if defined(__SWITCH__)
 +#include <switch.h>
-+#include <ouncehen.h>
++#include <kaihen.h>
 +#include <stdlib.h>
 +#include "jit_allocator.hpp"
 +
@@ -844,8 +844,8 @@ index 5100e60..1d9bdd0 100644
 +	const uintptr_t off = uintptr_t(code) - uintptr_t(jitGetRwAddr(j));
 +	const uintptr_t start = off & ~uintptr_t(63);
 +	const uintptr_t end = (off + size + 63) & ~uintptr_t(63);
-+	OuncehenJitRange range = { u64(start), u64(end - start) };
-+	return R_SUCCEEDED(ouncehenJitPublishRanges(j, &range, 1));
++	KaihenJitRange range = { u64(start), u64(end - start) };
++	return R_SUCCEEDED(kaihenJitPublishRanges(j, &range, 1));
 +}
 +
 +void *Allocator::exec_address(void *code)

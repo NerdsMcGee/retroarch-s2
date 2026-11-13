@@ -916,7 +916,7 @@ index 4687729..ff6e1d3 100644
     geometry->base_height = *height;
     geometry->max_width   = maximum;
 diff --git a/core/libretro/vmem_utils.cpp b/core/libretro/vmem_utils.cpp
-index 4a077e4..5234a5d 100644
+index 4a077e4..295893d 100644
 --- a/core/libretro/vmem_utils.cpp
 +++ b/core/libretro/vmem_utils.cpp
 @@ -22,6 +22,16 @@
@@ -966,12 +966,12 @@ index 4a077e4..5234a5d 100644
  
 +#ifdef __SWITCH2__
 +#include <switch/kernel/jit.h>
-+#include <ouncehen/protocol.h>
-+extern "C" Result ouncehenJitPublishRanges(Jit* code, const OuncehenJitRange* ranges, size_t count);
++#include <kaihen/protocol.h>
++extern "C" Result kaihenJitPublishRanges(Jit* code, const KaihenJitRange* ranges, size_t count);
 +static Jit sw2_jit;
 +static bool sw2_jit_ready;
 +static int sw2_jit_depth;
-+static OuncehenJitRange sw2_ranges[256];
++static KaihenJitRange sw2_ranges[256];
 +static int sw2_nranges;
 +static bool sw2_all_dirty;
 +/* The code is staged in the writable buffer; what a write window changed
@@ -980,10 +980,10 @@ index 4a077e4..5234a5d 100644
 +{
 +	if (!sw2_jit_ready || (sw2_nranges == 0 && !sw2_all_dirty))
 +		return;
-+	OuncehenJitRange all = { 0, (u64)sw2_jit.size };
-+	const OuncehenJitRange *r = sw2_all_dirty ? &all : sw2_ranges;
++	KaihenJitRange all = { 0, (u64)sw2_jit.size };
++	const KaihenJitRange *r = sw2_all_dirty ? &all : sw2_ranges;
 +	const size_t n = sw2_all_dirty ? 1 : (size_t)sw2_nranges;
-+	Result rc = ouncehenJitPublishRanges(&sw2_jit, r, n);
++	Result rc = kaihenJitPublishRanges(&sw2_jit, r, n);
 +	if (R_FAILED(rc))
 +	{
 +		exit(1);

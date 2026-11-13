@@ -162,7 +162,7 @@ index 4e19227..d555e91 100644
    ring_alloc(&tcache_ring[tcache_id], tcache_ptr - block_entry_ptr);
    host_instructions_updated(block_entry_ptr, tcache_ptr, 1);
 diff --git a/platform/libretro/libretro.c b/platform/libretro/libretro.c
-index 207350d..3c8de3f 100644
+index 207350d..27e907e 100644
 --- a/platform/libretro/libretro.c
 +++ b/platform/libretro/libretro.c
 @@ -484,11 +484,60 @@ void plat_munmap(void *ptr, size_t size)
@@ -170,7 +170,7 @@ index 207350d..3c8de3f 100644
  #endif
  
 +#ifdef __SWITCH2__
-+#include <ouncehen.h>
++#include <kaihen.h>
 +static Jit drc_jit;
 +static int drc_jit_state;  /* 0 not made, 1 made, -1 failed */
 +ptrdiff_t drc_wofs;
@@ -179,7 +179,7 @@ index 207350d..3c8de3f 100644
 +   uintptr_t rx = (uintptr_t)drc_jit.rx_addr;
 +   uintptr_t s = (uintptr_t)start & ~(uintptr_t)63;
 +   uintptr_t e = ((uintptr_t)end + 63) & ~(uintptr_t)63;
-+   OuncehenJitRange r;
++   KaihenJitRange r;
 +   Result rc;
 +   if (drc_jit_state != 1)
 +      return;
@@ -191,11 +191,11 @@ index 207350d..3c8de3f 100644
 +      return;
 +   r.offset = s - rx;
 +   r.size   = e - s;
-+   rc = ouncehenJitPublishRanges(&drc_jit, &r, 1);
++   rc = kaihenJitPublishRanges(&drc_jit, &r, 1);
 +   if (R_FAILED(rc))
 +   {
 +      if (log_cb)
-+         log_cb(RETRO_LOG_ERROR, "ouncehenJitPublishRanges failed: %08x\n", (unsigned)rc);
++         log_cb(RETRO_LOG_ERROR, "kaihenJitPublishRanges failed: %08x\n", (unsigned)rc);
 +      abort();
 +   }
 +}

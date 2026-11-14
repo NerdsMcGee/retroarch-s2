@@ -1,17 +1,19 @@
 #!/bin/bash
-# Incremental build of the flycast JIT core, then link the per-core NRO -> retroarch/out/flycast_jit2.nro
-export DEVKITPRO=/opt/devkitpro DEVKITA64=/opt/devkitpro/devkitA64
-export PATH=/opt/devkitpro/tools/bin:/opt/devkitpro/devkitA64/bin:$PATH
-cd /Volumes/switch/recomps/cores/libretro-flycast-jit
-make -f Makefile platform=libounce -j8 > /Volumes/switch/recomps/cores/flycast_jit.log 2>&1
+# Incremental build of the Flycast JIT core, then its NRO through
+# build_cores_switch2.sh: out/cores/flycast_libretro_libnx.nro in this
+# checkout. Paths come from switch2/env.sh.
+. "$(dirname "$0")/../env.sh" || exit 1
+LOGD=${SW2_LOGS:-$SW2_CORES}
+cd "$SW2_CORES/libretro-flycast-jit" || exit 1
+make -f Makefile platform=libounce -j8 > "$LOGD/flycast_jit.log" 2>&1
 rc=$?
 echo rc=$rc
-grep -m8 "error" /Volumes/switch/recomps/cores/flycast_jit.log
+grep -m8 "error" "$LOGD/flycast_jit.log"
 if [ $rc -eq 0 ]; then
-  cp parallel_dc_libretro_libnx.a /Volumes/switch/recomps/cores/out/flycast_jit.a
-  cd /Volumes/switch/recomps/retroarch
-  ./build_cores_switch2.sh flycast=/Volumes/switch/recomps/cores/out/flycast_jit.a > /Volumes/switch/recomps/scratch/nro.log 2>&1
-  echo nro rc=$? fail=$(grep -c "build failed" /Volumes/switch/recomps/scratch/nro.log)
-  cp out/cores/flycast_libretro_libnx.nro out/flycast_jit2.nro
-  ls -l out/flycast_jit2.nro
+  mkdir -p "$SW2_OUT"
+  cp parallel_dc_libretro_libnx.a "$SW2_OUT/flycast_jit.a"
+  cd "$SW2_REPO" || exit 1
+  ./build_cores_switch2.sh flycast="$SW2_OUT/flycast_jit.a" > "$LOGD/flycast_nro.log" 2>&1
+  echo nro rc=$? fail=$(grep -c "build failed" "$LOGD/flycast_nro.log")
+  ls -l out/cores/flycast_libretro_libnx.nro
 fi

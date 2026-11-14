@@ -1,5 +1,6 @@
 #!/bin/zsh
-export DEVKITPRO=/opt/devkitpro DEVKITA64=/opt/devkitpro/devkitA64
-export PATH=$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH
-cd /Volumes/switch/recomps/retroarch
+# Builds retroarch_switch.nro in this checkout with Makefile.libounce;
+# arguments go to make. Paths come from switch2/env.sh.
+. "${0:A:h}/switch2/env.sh" || exit 1
+cd "$SW2_REPO" || exit 1
 make -f Makefile.libounce -j8 "$@"

@@ -1,6 +1,14 @@
+# A plain CMake toolchain for libounce. The release builds mgba with the
+# devkit's own $DEVKITPRO/libounce/cmake/Switch2.cmake instead; this one is
+# kept for projects that need a bare toolchain. devkitPro is taken from
+# $DEVKITPRO, or /opt/devkitpro when it is not set.
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
-set(DKP /opt/devkitpro)
+if(DEFINED ENV{DEVKITPRO})
+  set(DKP $ENV{DEVKITPRO})
+else()
+  set(DKP /opt/devkitpro)
+endif()
 set(CMAKE_C_COMPILER ${DKP}/devkitA64/bin/aarch64-none-elf-gcc)
 set(CMAKE_CXX_COMPILER ${DKP}/devkitA64/bin/aarch64-none-elf-g++)
 set(CMAKE_AR ${DKP}/devkitA64/bin/aarch64-none-elf-gcc-ar CACHE FILEPATH "")

@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
-# build_core.py <name>: clone via libretro-super recipe, add libounce platform, build static .a
+# build_core.py <name> [subdir]: clone via libretro-super recipe, add libounce
+# platform, build static .a into $SW2_OUT/<name>.a.
+# Paths come from the environment, as switch2/env.sh sets them; unset ones
+# default to the layout that file describes, relative to this checkout.
 import os, re, subprocess, sys, glob, shutil
-ROOT = "/Volumes/switch/recomps/cores"
-RECIPES = "/Volumes/switch/recomps/libretro-super/recipes/nintendo/libnx"
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.environ.get("SW2_REPO") or os.path.dirname(HERE)
+WORK = os.environ.get("SW2_WORK") or os.path.dirname(REPO)
+ROOT = os.environ.get("SW2_CORES") or os.path.join(WORK, "cores")
+OUT = os.environ.get("SW2_OUT") or os.path.join(ROOT, "out")
+LOGS = os.environ.get("SW2_LOGS") or ROOT
+RECIPES = os.environ.get("SW2_RECIPES") or os.path.join(WORK, "libretro-super", "recipes", "nintendo", "libnx")
+DKP = os.environ.get("DEVKITPRO") or "/opt/devkitpro"
+DKA64 = os.environ.get("DEVKITA64") or os.path.join(DKP, "devkitA64")
 name = sys.argv[1]
-env = dict(os.environ, DEVKITPRO="/opt/devkitpro", DEVKITA64="/opt/devkitpro/devkitA64")
-env["PATH"] = "/opt/devkitpro/tools/bin:/opt/devkitpro/devkitA64/bin:" + env["PATH"]
+env = dict(os.environ, DEVKITPRO=DKP, DEVKITA64=DKA64)
+env["PATH"] = os.path.join(DKP, "tools", "bin") + os.pathsep + os.path.join(DKA64, "bin") + os.pathsep + env["PATH"]
 rec = None
 for l in open(RECIPES):
     p = l.split()
@@ -54,13 +64,13 @@ else:
     # first line of new block must begin as 'else ifeq' to chain; fix if original began with plain 'ifeq'
     open(mkpath, "w").write("\n".join(lines))
 args = ["make", "-f", mk, "platform=libounce", "-j8"]
-log = os.path.join(ROOT, name + ".log")
+log = os.path.join(LOGS, name + ".log")
 with open(log, "w") as f:
     r = subprocess.call(args, cwd=bd, env=env, stdout=f, stderr=subprocess.STDOUT)
 arch = sorted(glob.glob(os.path.join(bd, "*_libretro_libnx.a")) + glob.glob(os.path.join(bd, "*libnx*.a")), key=os.path.getmtime)
 if r != 0 or not arch:
     print("FAIL", name, "rc", r, "(see", log + ")")
     sys.exit(1)
-os.makedirs(os.path.join(ROOT, "out"), exist_ok=True)
-shutil.copy(arch[-1], os.path.join(ROOT, "out", name + ".a"))
+os.makedirs(OUT, exist_ok=True)
+shutil.copy(arch[-1], os.path.join(OUT, name + ".a"))
 print("OK", name, os.path.getsize(arch[-1]))

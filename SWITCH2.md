@@ -19,7 +19,28 @@ Build with **ounce-devkit 20261114** or later:
 ```
 switch2/rebuild_release.sh     # every core and the frontend from zero objects, one NRO per core
 switch2/link_release.sh        # the frontend and the NROs only, from existing core archives
+./build_switch2.sh             # the frontend NRO only (arguments go to make)
 ```
+
+The NROs and build logs go to `out/release` in this checkout.
+
+The scripts take their paths from `switch2/env.sh`. Set any of these in the environment to override the default:
+
+| Variable | Default | What it is |
+|---|---|---|
+| `SW2_REPO` | this checkout, found with git | the RetroArch tree that is built |
+| `SW2_WORK` | the folder the checkout is in | the folder holding the core checkouts |
+| `SW2_CORES` | `$SW2_WORK/cores` | the core checkouts |
+| `SW2_OUT` | `$SW2_CORES/out` | the static core archives |
+| `DEVKITPRO` | `/opt/devkitpro` | devkitPro with ounce-devkit installed |
+| `CMAKE` | `cmake` | CMake 3.13 or later, for mgba |
+
+`SW2_WORK` is expected to hold:
+- `cores/` with the makefile cores, `libretro-pcsx_rearmed`, `libretro-mgba`, `libretro-flycast-jit` and `libretro-mupen64plus_next`;
+- `picodrive/` and `libretro-fceumm/`;
+- `libretro-super/`, whose recipes `switch2/build_core.py` uses to clone a core.
+
+Each checkout gets its patch from `switch2/patches/` first (see Cores below).
 
 `Makefile.libounce` is `Makefile.libnx` with the libounce rules. It builds OpenGL ES 3 (`HAVE_OPENGLES3`) and Vulkan (`HAVE_VULKAN`, with `HAVE_SLANG` and `HAVE_RSLC`). Vulkan is the default driver. Desktop GL goes through Zink and hard-crashes the console.
 

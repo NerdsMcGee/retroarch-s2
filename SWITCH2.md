@@ -4,7 +4,7 @@ A port of RetroArch to the Switch 2. It uses libounce, a libnx-compatible librar
 
 ## Devkit
 
-Build with **ounce-devkit 20261113f** or later:
+Build with **ounce-devkit 20261114** or later:
 - libounce, plus OunceVK (Vulkan, EGL and OpenGL ES on Zink);
 - kaiHEN, the loader. In earlier SDKs it was called OunceHEN.
 

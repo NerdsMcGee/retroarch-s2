@@ -589,7 +589,7 @@ index b3e8c60..0b5f014 100644
        case GLSM_CTL_NONE:
        default:
 diff --git a/libretro/libretro.c b/libretro/libretro.c
-index 4a9f129..bc28372 100644
+index 4a9f129..1427c4e 100644
 --- a/libretro/libretro.c
 +++ b/libretro/libretro.c
 @@ -741,7 +741,18 @@ void retro_deinit(void)
@@ -623,6 +623,28 @@ index 4a9f129..bc28372 100644
  
          var.key = CORE_NAME "-parallel-rdp-overscan";
          var.value = NULL;
+@@ -2042,6 +2057,10 @@ void retro_unload_game(void)
+     retro_savestate_complete = false;
+ }
+ 
++#if defined(__SWITCH2__)
++extern void sw2_n64_flush_links(void);
++#endif
++
+ void retro_run (void)
+ {
+     libretro_swap_buffer = false;
+@@ -2098,6 +2117,10 @@ void retro_run (void)
+         // screen_pitch will be 0 for GLN
+         video_cb(NULL, retro_screen_width, retro_screen_height, screen_pitch);
+     }
++#if defined(__SWITCH2__)
++    /* publish any dynarec link patches still waiting (see assem_arm64.c) */
++    sw2_n64_flush_links();
++#endif
+ }
+ 
+ void retro_reset (void)
 diff --git a/libretro/libretro_core_options.h b/libretro/libretro_core_options.h
 index fb39aa9..f731e17 100644
 --- a/libretro/libretro_core_options.h
@@ -664,16 +686,64 @@ index fb39aa9..f731e17 100644
      {
          CORE_NAME "-parallel-rdp-overscan",
 diff --git a/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c b/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
-index 98dea54..baf3e9d 100644
+index 98dea54..3c0b6eb 100644
 --- a/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
 +++ b/mupen64plus-core/src/device/r4300/new_dynarec/arm64/assem_arm64.c
-@@ -261,8 +261,29 @@ static uintptr_t jump_table_symbols[] = {
+@@ -261,8 +261,80 @@ static uintptr_t jump_table_symbols[] = {
    (intptr_t)breakpoint
  };
  
 +#if defined(__SWITCH2__)
 +extern Jit sw2_n64_jit;
 +extern int sw2_n64_jit_ready;
++
++/* Link patches (add_pointer) are not needed for correctness: until the patched
++   branch is published the executable view still jumps to the linker stub, which
++   resolves the same target again. So their publishes (one IPC to RO, ~45 us
++   each) wait here and go out together with the next required publish, at the
++   end of the frame, or when a site traps again or the list is full. */
++#define SW2_LAZY_MAX 16
++static uintptr_t sw2_lazy_site[SW2_LAZY_MAX]; /* rx address of each patched branch */
++static int sw2_lazy_n;
++
++static size_t sw2_lazy_take(KaihenJitRange *r, size_t n, uintptr_t rx)
++{
++    /* appends the pending sites as whole 64-byte lines, empties the list */
++    for (int i = 0; i < sw2_lazy_n; i++) {
++        uintptr_t s = sw2_lazy_site[i] & ~(uintptr_t)63;
++        r[n].offset = (u64)(s - rx); r[n].size = 64; n++;
++    }
++    sw2_lazy_n = 0;
++    return n;
++}
++
++static void cache_flush(char* start, char* end);
++
++/* publish whatever link patches are waiting (end of frame, list full, re-trap) */
++void sw2_n64_flush_links(void)
++{
++    if (!sw2_lazy_n || !sw2_n64_jit_ready) return;
++    uintptr_t rx = (uintptr_t)jitGetRxAddr(&sw2_n64_jit);
++    KaihenJitRange r[SW2_LAZY_MAX];
++    size_t n = sw2_lazy_take(r, 0, rx);
++    if (R_FAILED(kaihenJitPublishRanges(&sw2_n64_jit, r, n)))
++        abort();
++}
++
++static void sw2_lazy_add(uintptr_t site_rx)
++{
++    if (sw2_lazy_n == SW2_LAZY_MAX)
++        sw2_n64_flush_links();
++    sw2_lazy_site[sw2_lazy_n++] = site_rx;
++}
++
++/* is this branch (rx address) patched in the staging view but not yet published? */
++static int sw2_lazy_pending(uintptr_t site_rx)
++{
++    for (int i = 0; i < sw2_lazy_n; i++)
++        if (sw2_lazy_site[i] == site_rx) return 1;
++    return 0;
++}
 +#endif
  static void cache_flush(char* start, char* end)
  {
@@ -688,8 +758,11 @@ index 98dea54..baf3e9d 100644
 +        if (s < rx) s = rx;
 +        if (e > rx + sw2_n64_jit.size) e = rx + sw2_n64_jit.size;
 +        if (e <= s) return;
-+        KaihenJitRange r = { (u64)(s - rx), (u64)(e - s) };
-+        if (R_FAILED(kaihenJitPublishRanges(&sw2_n64_jit, &r, 1)))
++        KaihenJitRange r[1 + SW2_LAZY_MAX];
++        size_t n = 0;
++        r[n].offset = (u64)(s - rx); r[n].size = (u64)(e - s); n++;
++        n = sw2_lazy_take(r, n, rx); /* link patches waiting: same request */
++        if (R_FAILED(kaihenJitPublishRanges(&sw2_n64_jit, r, n)))
 +            abort();
 +        return;
 +    }
@@ -697,7 +770,20 @@ index 98dea54..baf3e9d 100644
  #ifndef WIN32
      // Don't rely on GCC's __clear_cache implementation, as it caches
      // icache/dcache cache line sizes, that can vary between cores on
-@@ -4666,5 +4687,9 @@ static void arch_init(void) {
+@@ -345,6 +417,12 @@ static void *add_pointer(void *src, void* addr)
+   assert((ptr2[2]&0x9f000000)==0x10000000); //adr
+   set_jump_target((intptr_t)src,(intptr_t)addr);
+   intptr_t ptr_rx=((intptr_t)ptr-(intptr_t)base_addr)+(intptr_t)base_addr_rx;
++#if defined(__SWITCH2__)
++  if (sw2_n64_jit_ready) {
++    sw2_lazy_add((uintptr_t)ptr_rx);
++    return ptr2;
++  }
++#endif
+   cache_flush((void*)ptr_rx, (void*)(ptr_rx+4));
+   return ptr2;
+ }
+@@ -4666,5 +4744,9 @@ static void arch_init(void) {
      ptr3+=2;
    }
  
@@ -708,7 +794,7 @@ index 98dea54..baf3e9d 100644
 +#endif
  }
 diff --git a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
-index 1e8f261..049fefb 100644
+index 1e8f261..087bdd6 100644
 --- a/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
 +++ b/mupen64plus-core/src/device/r4300/new_dynarec/new_dynarec.c
 @@ -56,7 +56,14 @@
@@ -727,7 +813,33 @@ index 1e8f261..049fefb 100644
  #include <sys/mman.h>
  #else
  #include "../../../../../switch/mman.h"
-@@ -8703,7 +8710,7 @@ static void pagespan_ds(void)
+@@ -2613,6 +2620,12 @@ void *dynamic_linker(void * src, u_int vaddr)
+ #if NEW_DYNAREC == NEW_DYNAREC_ARM64
+     //TODO: Avoid disabling link between blocks for conditional branches
+     int *ptr=(int*)src_rw;
++#if defined(__SWITCH2__)
++    if(sw2_lazy_pending((uintptr_t)src)) {
++      /* already patched in the staging view, only not published: do it now */
++      sw2_n64_flush_links();
++    } else
++#endif
+     if((*ptr&0xfc000000)==0x14000000) { //b
+       add_link(vaddr, add_pointer(src_rw,head->addr));
+     }
+@@ -2671,6 +2684,12 @@ void *dynamic_linker_ds(void * src, u_int vaddr)
+ #if NEW_DYNAREC == NEW_DYNAREC_ARM64
+     //TODO: Avoid disabling link between blocks for conditional branches
+     int *ptr=(int*)src_rw;
++#if defined(__SWITCH2__)
++    if(sw2_lazy_pending((uintptr_t)src)) {
++      /* already patched in the staging view, only not published: do it now */
++      sw2_n64_flush_links();
++    } else
++#endif
+     if((*ptr&0xfc000000)==0x14000000) { //b
+       add_link(vaddr, add_pointer(src_rw,head->addr));
+     }
+@@ -8703,7 +8722,7 @@ static void pagespan_ds(void)
  }
  
  /**** Recompiler ****/
@@ -736,7 +848,7 @@ index 1e8f261..049fefb 100644
  ALIGN(4096, char jit_memory[33554432]) __attribute__((section(".text")));
  #endif
  void new_dynarec_init(void)
-@@ -8730,7 +8737,14 @@ void new_dynarec_init(void)
+@@ -8730,7 +8749,14 @@ void new_dynarec_init(void)
  #endif
  
  #if CACHE_ADDR==DOUBLE_CACHE_ADDR
@@ -752,7 +864,7 @@ index 1e8f261..049fefb 100644
    base_addr = mmap((u_char *)jit_memory, 1<<TARGET_SIZE_2, 0,0,0,0);
    base_addr_rx = (void*)jit_memory;
  #else
-@@ -8810,7 +8824,11 @@ void new_dynarec_init(void)
+@@ -8810,7 +8836,11 @@ void new_dynarec_init(void)
    // Copy this into local area so we don't have to put it in every literal pool
    g_dev.r4300.new_dynarec_hot_state.invc_ptr=g_dev.r4300.cached_interp.invalid_code;
  #endif
@@ -765,7 +877,7 @@ index 1e8f261..049fefb 100644
    stop_after_jal=0;
  #else
    stop_after_jal=1;
-@@ -8842,6 +8860,9 @@ void new_dynarec_cleanup(void)
+@@ -8842,6 +8872,9 @@ void new_dynarec_cleanup(void)
  #if !defined(RECOMP_DBG)
    #if defined(WIN32)
      VirtualFree(base_addr, 0, MEM_RELEASE);
@@ -1006,6 +1118,198 @@ index 2052404..fd73b85 100644
  
  #ifdef TRACE_DISASM
  	printf(" === DISASM ===\n");
+diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp
+index 5220cbc..754ed2a 100644
+--- a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp
++++ b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp
+@@ -26,6 +26,8 @@
+ #include "thread_id.hpp"
+ #include <assert.h>
+ 
++#include <chrono>
++
+ namespace RDP
+ {
+ void CommandRing::init(
+@@ -38,8 +40,9 @@ void CommandRing::init(
+ 	teardown_thread();
+ 	processor = processor_;
+ 	ring.resize(count);
+-	write_count = 0;
+-	read_count = 0;
++	write_count.store(0);
++	read_count.store(0);
++	completed_count.store(0);
+ #ifdef PARALLEL_RDP_SHADER_DIR
+ 	global_handles = std::move(global_handles_);
+ #endif
+@@ -62,25 +65,41 @@ CommandRing::~CommandRing()
+ 
+ void CommandRing::drain()
+ {
+-	std::unique_lock<std::mutex> holder{lock};
+-	cond.wait(holder, [this]() {
+-		return write_count == completed_count;
+-	});
++	draining.fetch_add(1);
++	{
++		std::unique_lock<std::mutex> holder{lock};
++		while (write_count.load() != completed_count.load())
++			cond.wait_for(holder, std::chrono::microseconds(500));
++	}
++	draining.fetch_sub(1);
+ }
+ 
+ void CommandRing::enqueue_command(unsigned num_words, const uint32_t *words)
+ {
+-	std::unique_lock<std::mutex> holder{lock};
+-	cond.wait(holder, [this, num_words]() {
+-		return write_count + num_words + 1 <= read_count + ring.size();
+-	});
++	const uint64_t need = uint64_t(num_words) + 1;
++	uint64_t w = write_count.load(std::memory_order_relaxed);
++
++	if (w + need > read_count.load(std::memory_order_acquire) + ring.size())
++	{
++		// Ring full: sleep until the consumer has made room.
++		producer_waiting.store(true);
++		std::unique_lock<std::mutex> holder{lock};
++		while (w + need > read_count.load() + ring.size())
++			cond.wait_for(holder, std::chrono::microseconds(200));
++		producer_waiting.store(false);
++	}
+ 
+-	size_t mask = ring.size() - 1;
+-	ring[write_count++ & mask] = num_words;
++	const size_t mask = ring.size() - 1;
++	ring[w++ & mask] = num_words;
+ 	for (unsigned i = 0; i < num_words; i++)
+-		ring[write_count++ & mask] = words[i];
++		ring[w++ & mask] = words[i];
++	write_count.store(w); // seq_cst: pairs with consumer_sleeping
+ 
+-	cond.notify_one();
++	if (consumer_sleeping.load())
++	{
++		std::lock_guard<std::mutex> holder{lock};
++		cond.notify_one();
++	}
+ }
+ 
+ void CommandRing::thread_loop()
+@@ -96,21 +115,38 @@ void CommandRing::thread_loop()
+ 
+ 	std::vector<uint32_t> tmp_buffer;
+ 	tmp_buffer.reserve(64);
+-	size_t mask = ring.size() - 1;
++	const size_t mask = ring.size() - 1;
+ 
+ 	for (;;)
+ 	{
+ 		bool is_idle = false;
++		uint64_t r = read_count.load(std::memory_order_relaxed);
++
++		if (write_count.load(std::memory_order_acquire) <= r)
+ 		{
+-			std::unique_lock<std::mutex> holder{lock};
+-			if (cond.wait_for(holder, std::chrono::microseconds(500), [this]() { return write_count > read_count; }))
++			// Spin briefly: commands usually arrive in bursts.
++			bool got = false;
++			for (int i = 0; i < 2000 && !got; i++)
+ 			{
+-				uint32_t num_words = ring[read_count++ & mask];
+-				tmp_buffer.resize(num_words);
+-				for (uint32_t i = 0; i < num_words; i++)
+-					tmp_buffer[i] = ring[read_count++ & mask];
++				got = write_count.load(std::memory_order_acquire) > r;
++				if (!got)
++					__asm__ volatile("yield");
+ 			}
+-			else
++			if (!got)
++			{
++				consumer_sleeping.store(true);
++				if (write_count.load() > r)
++					got = true;
++				else
++				{
++					std::unique_lock<std::mutex> holder{lock};
++					got = cond.wait_for(holder, std::chrono::microseconds(500), [this, r]() {
++						return write_count.load() > r;
++					});
++				}
++				consumer_sleeping.store(false);
++			}
++			if (!got)
+ 			{
+ 				// If we don't receive commands at a steady pace,
+ 				// notify rendering thread that we should probably kick some work.
+@@ -120,15 +156,32 @@ void CommandRing::thread_loop()
+ 			}
+ 		}
+ 
++		if (!is_idle)
++		{
++			uint32_t num_words = ring[r++ & mask];
++			tmp_buffer.resize(num_words);
++			for (uint32_t i = 0; i < num_words; i++)
++				tmp_buffer[i] = ring[r++ & mask];
++			read_count.store(r);
++			if (producer_waiting.load())
++			{
++				std::lock_guard<std::mutex> holder{lock};
++				cond.notify_all();
++			}
++		}
++
+ 		if (tmp_buffer.empty())
+ 			break;
+ 
+ 		processor->enqueue_command_direct(tmp_buffer.size(), tmp_buffer.data());
+ 		if (!is_idle)
+ 		{
+-			std::lock_guard<std::mutex> holder{lock};
+-			completed_count = read_count;
+-			cond.notify_one();
++			completed_count.store(r);
++			if (draining.load())
++			{
++				std::lock_guard<std::mutex> holder{lock};
++				cond.notify_all();
++			}
+ 		}
+ 	}
+ }
+diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.hpp b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.hpp
+index c74c43d..2889481 100644
+--- a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.hpp
++++ b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.hpp
+@@ -23,6 +23,7 @@
+ #pragma once
+ 
+ #include <thread>
++#include <atomic>
+ #include <mutex>
+ #include <condition_variable>
+ #include <vector>
+@@ -54,9 +55,14 @@ private:
+ 	std::condition_variable cond;
+ 
+ 	std::vector<uint32_t> ring;
+-	uint64_t write_count = 0;
+-	uint64_t read_count = 0;
+-	uint64_t completed_count = 0;
++	// Switch 2: the producer (emulation thread) takes no lock and makes no kernel call per
++	// command. The mutex and condition variable are only used to sleep and wake.
++	std::atomic<uint64_t> write_count{0};
++	std::atomic<uint64_t> read_count{0};
++	std::atomic<uint64_t> completed_count{0};
++	std::atomic<bool> consumer_sleeping{false};
++	std::atomic<bool> producer_waiting{false};
++	std::atomic<int> draining{0};
+ 
+ 	void thread_loop();
+ 	void teardown_thread();
 diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/util/timer.cpp b/mupen64plus-video-paraLLEl/parallel-rdp/util/timer.cpp
 index d6b0c9f..72b7fea 100644
 --- a/mupen64plus-video-paraLLEl/parallel-rdp/util/timer.cpp

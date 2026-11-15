@@ -4,7 +4,7 @@ A port of RetroArch to the Switch 2. It uses libounce, a libnx-compatible librar
 
 ## Devkit
 
-Build with **ounce-devkit 20261114** or later:
+Build with **ounce-devkit 20261115b** or later:
 - libounce, plus OunceVK (Vulkan, EGL and OpenGL ES on Zink);
 - kaiHEN, the loader. In earlier SDKs it was called OunceHEN.
 
@@ -77,13 +77,14 @@ Generated code is written to a libounce `Jit`'s staging view and made runnable w
 
 ## Cores
 
-The release builds 22 cores. Each one is its own NRO, `/retroarch/cores/<name>_libretro_libnx.nro`.
+The release builds 23 cores. Each one is its own NRO, `/retroarch/cores/<name>_libretro_libnx.nro`.
 
 `switch2/patches/` holds one patch per core (`git apply` inside the core checkout). Each adds a `libounce` platform, and adds Switch 2 code where needed. Flycast's patch is for libretro/flycast at 6db95c1.
 
 - `switch2/build_core.py <name>` builds a core's static archive.
 - mgba is CMake-only: build it with the devkit's `Switch2.cmake`.
-- `switch2/rebuild_release.sh` builds all 22 and the frontend.
+- `switch2/rebuild_release.sh` builds all 23 and the frontend.
+- bsnes builds with its own nall makefile: `make -f GNUmakefile target=libretro binary=library local=false platform=libounce` in `bsnes/`. Without `local=false` it adds `-march=native`.
 
 ### Built cores and hardware testing
 
@@ -96,6 +97,7 @@ The release builds 22 cores. Each one is its own NRO, `/retroarch/cores/<name>_l
   - QuickNES (`quicknes`): not tested
 - **SNES**
   - Snes9x 2010 (`snes9x2010`): played. Star Fox, Yoshi's Island, Super Mario RPG
+  - bsnes (`bsnes`, with MSU-1): played. An MSU-1 game with its soundtrack
   - Snes9x (`snes9x`): not tested
 - **Game Boy / Game Boy Color**
   - Gambatte (`gambatte`): not tested
@@ -122,7 +124,9 @@ The release builds 22 cores. Each one is its own NRO, `/retroarch/cores/<name>_l
 - **Dreamcast**
   - Flycast (`flycast`, JIT, Vulkan renderer): played. Sonic Adventure, Phantasy Star Online Ver. 2
 
-So far 10 cores are played, 2 boot, and 10 are not tested.
+So far 11 cores are played, 2 boot, and 10 are not tested.
+
+MSU-1 with bsnes: keep the ROM and its MSU-1 files loose in one folder, with the ROM's base name: `Game.sfc`, `Game.msu`, `Game-1.pcm`, `Game-2.pcm` and so on. A zipped ROM does not work, because RetroArch unpacks it to a temporary folder where bsnes cannot find the MSU-1 files.
 
 Fixed during testing:
 - PCSX ReARMed: Gran Turismo froze while loading a race. Code it ran from the stack went stale.

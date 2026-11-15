@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Full clean release build with the installed devkit: every core (Flycast and
-# Mupen64Plus-Next included) from zero objects, the frontend (this checkout)
+# Full clean release build with the installed devkit: every core (Flycast,
+# Mupen64Plus-Next and bsnes included) from zero objects, the frontend (this checkout)
 # from zero objects, one NRO per core, then a scan for trace strings.
 # Paths come from switch2/env.sh. NROs and logs go to out/release.
 . "${0:A:h}/env.sh" || exit 1
@@ -84,14 +84,24 @@ if (cd $M && make platform=libounce -j10 > $L/mupen64plus_next.log 2>&1) && [ -f
   cp $M/mupen64plus_next_libretro_libnx.a $O/mupen64plus_next.a; say "OK mupen64plus_next"
 else say "FAIL mupen64plus_next"; fi
 
-# 5. frontend from zero objects, then one NRO per core
+# 5. bsnes: the nall build that libretro-super's recipe uses. local=false
+# keeps bsnes from adding -march=native.
+BS=$SW2_CORES/libretro-bsnes/bsnes
+find $BS/obj -name '*.o' -delete 2>/dev/null; find $BS/obj -name '*.d' -delete 2>/dev/null
+rm -f $BS/out/bsnes_libretro_libnx.a
+if (cd $BS && make -f GNUmakefile target=libretro binary=library local=false platform=libounce -j10 > $L/bsnes.log 2>&1) \
+    && [ -f $BS/out/bsnes_libretro_libnx.a ]; then
+  cp $BS/out/bsnes_libretro_libnx.a $O/bsnes.a; say "OK bsnes"
+else say "FAIL bsnes"; fi
+
+# 6. frontend from zero objects, then one NRO per core
 cd $V
 find . -name '*.o' -delete; find . -name '*.d' -delete
 rm -f retroarch_switch.elf retroarch_switch.nro libretro_libnx.a $OUT/*.nro
 if make -f Makefile.libounce HAVE_STATIC_DUMMY=1 -j10 > $L/frontend.log 2>&1 && [ -f retroarch_switch.nro ]; then
   cp retroarch_switch.nro $OUT/retroarch_switch.nro; say "FRONTEND OK $(size retroarch_switch.nro)"
 else say "FRONTEND FAIL"; exit 1; fi
-for name in snes9x snes9x2010 nestopia quicknes mesen gearboy sameboy vba_next genesis_plus_gx \
+for name in snes9x snes9x2010 bsnes nestopia quicknes mesen gearboy sameboy vba_next genesis_plus_gx \
   gearsystem mednafen_pce_fast mednafen_supergrafx handy prosystem gambatte stella mgba picodrive \
   fceumm pcsx_rearmed flycast mupen64plus_next; do
   lib=$O/$name.a

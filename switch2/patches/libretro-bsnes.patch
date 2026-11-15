@@ -1,0 +1,55 @@
+diff --git a/bsnes/target-libretro/GNUmakefile b/bsnes/target-libretro/GNUmakefile
+index a39bed5..e62865c 100644
+--- a/bsnes/target-libretro/GNUmakefile
++++ b/bsnes/target-libretro/GNUmakefile
+@@ -14,6 +14,11 @@ else ifeq ($(platform), libnx)
+ 	flags += -O2 -ftree-vectorize -ffast-math -funsafe-math-optimizations -fPIE -I$(PORTLIBS)/include/ -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec
+ 	flags += -D__SWITCH__=1 -D__aarch64__=1 -DSWITCH -DHAVE_LIBNX
+ 	name := bsnes_libretro_libnx
++else ifeq ($(platform), libounce)
++	flags += $(SWITCH2_CPU) -mtp=soft -DHAVE_POSIX_MEMALIGN
++	flags += -O2 -ftree-vectorize -ffast-math -funsafe-math-optimizations -fPIE -I$(PORTLIBS)/include/ -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec
++	flags += -D__aarch64__=1
++	name := bsnes_libretro_libnx
+ endif
+ 
+ objects := libretro program $(objects)
+@@ -31,6 +36,8 @@ else ifeq ($(platform),windows)
+ 	$(strip $(compiler) -o out/bsnes_libretro.dll -shared $(objects) -Wl,--no-undefined -Wl,--version-script=target-libretro/link.T -lgomp -Wl,-Bdynamic $(options))
+ else ifeq ($(platform),libnx)
+ 	$(strip $(AR) rcs out/bsnes_libretro_libnx.a $(objects))
++else ifeq ($(platform),libounce)
++	$(strip $(AR) rcs out/bsnes_libretro_libnx.a $(objects))
+ else ifeq ($(platform),macos)
+ 	$(strip $(compiler) -o out/bsnes_libretro.dylib -shared $(objects) -lpthread -ldl)
+ else ifeq ($(platform),ios-arm64)
+diff --git a/nall/GNUmakefile b/nall/GNUmakefile
+index 2473ea1..6aaa3bf 100755
+--- a/nall/GNUmakefile
++++ b/nall/GNUmakefile
+@@ -79,6 +79,13 @@ ifeq ($(compiler),)
+     compiler = $(CC) -std=gnu11
+     compiler.cpp = $(CXX) -std=gnu++17
+     openmp = false
++  else ifeq ($(platform),libounce)
++    include $(DEVKITPRO)/libounce/switch2_rules
++    PORTLIBS := $(PORTLIBS_PATH)/switch
++    PATH := $(PORTLIBS)/bin:$(PATH)
++    compiler = $(CC) -std=gnu11
++    compiler.cpp = $(CXX) -std=gnu++17
++    openmp = false
+   else ifeq ($(platform),bsd)
+     compiler := g++14
+   else
+@@ -146,6 +153,11 @@ ifeq ($(platform),libnx)
+   flags += -D__SWITCH__=1 -DSWITCH -DHAVE_LIBNX
+ endif
+ 
++# libounce (Switch 2) settings
++ifeq ($(platform),libounce)
++  flags += -D__SWITCH__=1 -D__SWITCH2__ -DSWITCH -DHAVE_LIBNX
++endif
++
+ # bsd settings
+ ifeq ($(platform),bsd)
+   flags   += -I/usr/local/include

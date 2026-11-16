@@ -97,7 +97,7 @@ else say "FAIL bsnes"; fi
 # 6. frontend from zero objects, then one NRO per core
 cd $V
 find . -name '*.o' -delete; find . -name '*.d' -delete
-rm -f retroarch_switch.elf retroarch_switch.nro libretro_libnx.a $OUT/*.nro
+rm -f retroarch_switch.elf retroarch_switch.nro libretro_libnx.a $OUT/*.nro(N)
 if make -f Makefile.libounce HAVE_STATIC_DUMMY=1 -j10 > $L/frontend.log 2>&1 && [ -f retroarch_switch.nro ]; then
   cp retroarch_switch.nro $OUT/retroarch_switch.nro; say "FRONTEND OK $(size retroarch_switch.nro)"
 else say "FRONTEND FAIL"; exit 1; fi

@@ -210,7 +210,7 @@ endif
 GIT_VERSION_CACHEDIR = $(if $(OBJDIR),$(OBJDIR),$(CURDIR))
 GIT_VERSION_CACHEFILE = $(GIT_VERSION_CACHEDIR)/git-version.cache
 
-ifneq (,$(wildcard .git/index))  # Building inside a Git repository?
+ifneq (,$(wildcard .git))  # Building inside a Git repository or worktree?
    GIT_VERSION := $(shell git rev-parse --short HEAD 2>/dev/null)
 endif
 

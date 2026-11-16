@@ -1,9 +1,10 @@
-#!/bin/zsh
+#!/bin/bash
 # Release link without rebuilding the cores: the frontend (this checkout)
 # from zero objects, then one NRO per core from the archives already in
 # $SW2_OUT (switch2/rebuild_release.sh builds them), 23 cores. Paths come from
 # switch2/env.sh. NROs and logs go to out/release.
-. "${0:A:h}/env.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/env.sh" || exit 1
+shopt -s nullglob
 V=$SW2_REPO
 O=$SW2_OUT
 OUT=$V/out/release

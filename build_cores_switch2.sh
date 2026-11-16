@@ -1,8 +1,8 @@
-#!/bin/zsh
+#!/bin/bash
 # Usage: build_cores_switch2.sh <core>=<path to core .a> ...
 # Builds one NRO per core (out/cores/<core>_libretro_libnx.nro) plus the
 # frontend NRO with a dummy core (out/retroarch_switch.nro), in this checkout.
-cd "${0:A:h}" || exit 1
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || exit 1
 mkdir -p out/cores
 for spec in "$@"; do
   name=${spec%%=*}; lib=${spec#*=}

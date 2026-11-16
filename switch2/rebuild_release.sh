@@ -1,9 +1,10 @@
-#!/bin/zsh
+#!/bin/bash
 # Full clean release build with the installed devkit: every core (Flycast,
 # Mupen64Plus-Next and bsnes included) from zero objects, the frontend (this checkout)
 # from zero objects, one NRO per core, then a scan for trace strings.
 # Paths come from switch2/env.sh. NROs and logs go to out/release.
-. "${0:A:h}/env.sh" || exit 1
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/env.sh" || exit 1
+shopt -s nullglob
 V=$SW2_REPO
 O=$SW2_OUT
 OUT=$V/out/release
@@ -41,13 +42,13 @@ for spec in \
   "prosystem libretro-prosystem Makefile" \
   "gambatte libretro-gambatte Makefile" \
   "stella libretro-stella/src/os/libretro Makefile src/os/libretro"; do
-  set -- ${=spec}
+  set -- $spec
   clean_make $SW2_CORES/$2 $3
   if python3 $V/switch2/build_core.py $1 $4 >> $LOG 2>&1; then say "OK $1"; else say "FAIL $1"; fi
 done
 for spec in "picodrive $SW2_WORK/picodrive" "fceumm $SW2_WORK/libretro-fceumm" \
   "pcsx_rearmed $SW2_CORES/libretro-pcsx_rearmed"; do
-  set -- ${=spec}
+  set -- $spec
   clean_make $2 Makefile.libretro
   if (cd $2 && make -f Makefile.libretro platform=libounce -j10 > $L/$1.log 2>&1) && [ -f $2/${1}_libretro_libnx.a ]; then
     cp $2/${1}_libretro_libnx.a $O/$1.a; say "OK $1"
@@ -97,7 +98,7 @@ else say "FAIL bsnes"; fi
 # 6. frontend from zero objects, then one NRO per core
 cd $V
 find . -name '*.o' -delete; find . -name '*.d' -delete
-rm -f retroarch_switch.elf retroarch_switch.nro libretro_libnx.a $OUT/*.nro(N)
+rm -f retroarch_switch.elf retroarch_switch.nro libretro_libnx.a $OUT/*.nro
 if make -f Makefile.libounce HAVE_STATIC_DUMMY=1 -j10 > $L/frontend.log 2>&1 && [ -f retroarch_switch.nro ]; then
   cp retroarch_switch.nro $OUT/retroarch_switch.nro; say "FRONTEND OK $(size retroarch_switch.nro)"
 else say "FRONTEND FAIL"; exit 1; fi

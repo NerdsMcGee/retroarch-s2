@@ -887,6 +887,245 @@ index 1e8f261..087bdd6 100644
    #elif NEW_DYNAREC == NEW_DYNAREC_ARM64 && CACHE_ADDR!=FIXED_CACHE_ADDR
      if (munmap (base_addr_rx, 1<<TARGET_SIZE_2) < 0) {DebugMessage(M64MSG_ERROR, "munmap() failed");}
    #else
+diff --git a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/clamp.h b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/clamp.h
+index 07cb799..14ec53d 100644
+--- a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/clamp.h
++++ b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/clamp.h
+@@ -5,6 +5,48 @@
+ // 'LICENSE', which is part of this source code package.
+ //
+ 
++#if defined(__aarch64__)
++// Adds a 48-bit value to the accumulator. Lanes 0-3 / 4-7 of the addend's low
++// 32 bits are in p0 / p1; its top 16 bits (0 or 0xffff, the sign) are in sign16.
++static inline void sw2_acc48_add(uint32x4_t p0, uint32x4_t p1, uint16x8_t sign16, __m128i *acc_lo, __m128i *acc_md,
++                                 __m128i *acc_hi)
++{
++	const uint16x8_t lo = vreinterpretq_u16_s32(*acc_lo), md = vreinterpretq_u16_s32(*acc_md);
++	const uint32x4_t l0 = vreinterpretq_u32_u16(vzip1q_u16(lo, md));
++	const uint32x4_t l1 = vreinterpretq_u32_u16(vzip2q_u16(lo, md));
++	const uint32x4_t s0 = vaddq_u32(l0, p0);
++	const uint32x4_t s1 = vaddq_u32(l1, p1);
++	const uint16x8_t carry = vcombine_u16(vmovn_u32(vcltq_u32(s0, l0)), vmovn_u32(vcltq_u32(s1, l1)));
++	const uint16x8_t w0 = vreinterpretq_u16_u32(s0), w1 = vreinterpretq_u16_u32(s1);
++	*acc_lo = vreinterpretq_s32_u16(vuzp1q_u16(w0, w1));
++	*acc_md = vreinterpretq_s32_u16(vuzp2q_u16(w0, w1));
++	// hi + sign - carry, where carry is 0xffff (-1) in lanes that carried.
++	*acc_hi = vreinterpretq_s32_u16(vsubq_u16(vaddq_u16(vreinterpretq_u16_s32(*acc_hi), sign16), carry));
++}
++
++// Products of a signed 16-bit and an unsigned 16-bit vector, exact in 32 bits.
++static inline void sw2_mul_su(int16x8_t s, uint16x8_t u, int32x4_t *p0, int32x4_t *p1)
++{
++	*p0 = vmulq_s32(vmovl_s16(vget_low_s16(s)), vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(u))));
++	*p1 = vmulq_s32(vmovl_high_s16(s), vreinterpretq_s32_u32(vmovl_high_u16(u)));
++}
++
++static inline uint16x8_t sw2_sign16(int32x4_t p0, int32x4_t p1)
++{
++	return vcombine_u16(vmovn_u32(vreinterpretq_u32_s32(vshrq_n_s32(p0, 31))),
++	                    vmovn_u32(vreinterpretq_u32_s32(vshrq_n_s32(p1, 31))));
++}
++
++// Signed saturation of the accumulator's upper 32 bits (hi:md) to 16 bits.
++static inline __m128i sw2_sclamp_md_hi(__m128i acc_md, __m128i acc_hi)
++{
++	const uint16x8_t md = vreinterpretq_u16_s32(acc_md), hi = vreinterpretq_u16_s32(acc_hi);
++	const int32x4_t a0 = vreinterpretq_s32_u16(vzip1q_u16(md, hi));
++	const int32x4_t a1 = vreinterpretq_s32_u16(vzip2q_u16(md, hi));
++	return vreinterpretq_s32_s16(vcombine_s16(vqmovn_s32(a0), vqmovn_s32(a1)));
++}
++#endif
++
+ static inline __m128i rsp_sclamp_acc_tomd(__m128i acc_md, __m128i acc_hi)
+ {
+ 	__m128i l = _mm_unpacklo_epi16(acc_md, acc_hi);
+diff --git a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/rsp_common.h b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/rsp_common.h
+index d190ba2..8a176d2 100644
+--- a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/rsp_common.h
++++ b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/rsp_common.h
+@@ -40,10 +40,20 @@ extern const uint16_t shuffle_keys[16][8];
+ 
+ static inline __m128i rsp_vect_load_and_shuffle_operand(const uint16_t *src, unsigned element)
+ {
++#if defined(__aarch64__)
++	// Elements 0 and 1 select the whole vector (identity key). The keys only
++	// hold byte indices below 16, so TBL needs no index mask.
++	const uint8x16_t operand = vld1q_u8(reinterpret_cast<const uint8_t *>(src));
++	if (element < 2)
++		return vreinterpretq_s32_u8(operand);
++	const uint8x16_t key = vld1q_u8(reinterpret_cast<const uint8_t *>(shuffle_keys[element]));
++	return vreinterpretq_s32_u8(vqtbl1q_u8(operand, key));
++#else
+ 	__m128i operand = _mm_load_si128((__m128i *)src);
+ 	__m128i key = _mm_load_si128((__m128i *)shuffle_keys[element]);
+ 
+ 	return _mm_shuffle_epi8(operand, key);
++#endif
+ }
+ #else
+ __m128i rsp_vect_load_and_shuffle_operand(const uint16_t *src, unsigned element);
+diff --git a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmac.h b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmac.h
+index 5180bae..2936477 100644
+--- a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmac.h
++++ b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmac.h
+@@ -5,6 +5,34 @@
+ // 'LICENSE', which is part of this source code package.
+ //
+ 
++#if defined(__aarch64__)
++template <bool VMACU>
++static inline __m128i rsp_vmacf_vmacu(__m128i vs, __m128i vt, __m128i zero, __m128i *acc_lo, __m128i *acc_md,
++                                      __m128i *acc_hi)
++{
++	const int16x8_t s = vreinterpretq_s16_s32(vs), t = vreinterpretq_s16_s32(vt);
++	const int32x4_t p0 = vmull_s16(vget_low_s16(s), vget_low_s16(t));
++	const int32x4_t p1 = vmull_high_s16(s, t);
++
++	// product * 2 needs 33 bits: the low 32 come from the shift, the sign from
++	// the product itself (0x8000 * 0x8000 * 2 is positive).
++	sw2_acc48_add(vshlq_n_u32(vreinterpretq_u32_s32(p0), 1), vshlq_n_u32(vreinterpretq_u32_s32(p1), 1),
++	              sw2_sign16(p0, p1), acc_lo, acc_md, acc_hi);
++
++	if (VMACU)
++	{
++		__m128i overflow_hi_mask, overflow_md_mask, md, overflow_mask;
++		overflow_hi_mask = _mm_srai_epi16(*acc_hi, 15);
++		overflow_md_mask = _mm_srai_epi16(*acc_md, 15);
++		md = _mm_or_si128(overflow_md_mask, *acc_md);
++		overflow_mask = _mm_cmpgt_epi16(*acc_hi, zero);
++		md = _mm_andnot_si128(overflow_hi_mask, md);
++		return _mm_or_si128(overflow_mask, md);
++	}
++
++	return sw2_sclamp_md_hi(*acc_md, *acc_hi);
++}
++#else
+ template <bool VMACU>
+ static inline __m128i rsp_vmacf_vmacu(__m128i vs, __m128i vt, __m128i zero, __m128i *acc_lo, __m128i *acc_md,
+                                       __m128i *acc_hi)
+@@ -65,3 +93,4 @@ static inline __m128i rsp_vmacf_vmacu(__m128i vs, __m128i vt, __m128i zero, __m1
+ 	else
+ 		return rsp_sclamp_acc_tomd(*acc_md, *acc_hi);
+ }
++#endif
+diff --git a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmulh.h b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmulh.h
+index a5cc66c..0fc706b 100644
+--- a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmulh.h
++++ b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmulh.h
+@@ -5,6 +5,31 @@
+ // 'LICENSE', which is part of this source code package.
+ //
+ 
++#if defined(__aarch64__)
++template <bool VMADH>
++static inline __m128i rsp_vmadh_vmudh(__m128i vs, __m128i vt, __m128i zero, __m128i *acc_lo, __m128i *acc_md,
++                                      __m128i *acc_hi)
++{
++	const int16x8_t s = vreinterpretq_s16_s32(vs), t = vreinterpretq_s16_s32(vt);
++	int32x4_t a0 = vmull_s16(vget_low_s16(s), vget_low_s16(t));
++	int32x4_t a1 = vmull_high_s16(s, t);
++
++	if (VMADH)
++	{
++		// The product only touches hi:md, which wraps as a 32-bit value.
++		const uint16x8_t md = vreinterpretq_u16_s32(*acc_md), hi = vreinterpretq_u16_s32(*acc_hi);
++		a0 = vaddq_s32(a0, vreinterpretq_s32_u16(vzip1q_u16(md, hi)));
++		a1 = vaddq_s32(a1, vreinterpretq_s32_u16(vzip2q_u16(md, hi)));
++	}
++	else
++		*acc_lo = zero;
++
++	const uint16x8_t w0 = vreinterpretq_u16_s32(a0), w1 = vreinterpretq_u16_s32(a1);
++	*acc_md = vreinterpretq_s32_u16(vuzp1q_u16(w0, w1));
++	*acc_hi = vreinterpretq_s32_u16(vuzp2q_u16(w0, w1));
++	return vreinterpretq_s32_s16(vcombine_s16(vqmovn_s32(a0), vqmovn_s32(a1)));
++}
++#else
+ template <bool VMADH>
+ static inline __m128i rsp_vmadh_vmudh(__m128i vs, __m128i vt, __m128i zero, __m128i *acc_lo, __m128i *acc_md,
+                                       __m128i *acc_hi)
+@@ -39,3 +64,4 @@ static inline __m128i rsp_vmadh_vmudh(__m128i vs, __m128i vt, __m128i zero, __m1
+ 
+ 	return rsp_sclamp_acc_tomd(*acc_md, *acc_hi);
+ }
++#endif
+diff --git a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmulm.h b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmulm.h
+index 80fb82b..ce73421 100644
+--- a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmulm.h
++++ b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmulm.h
+@@ -5,6 +5,28 @@
+ // 'LICENSE', which is part of this source code package.
+ //
+ 
++#if defined(__aarch64__)
++template <bool VMADM>
++static inline __m128i rsp_vmadm_vmudm(__m128i vs, __m128i vt, __m128i zero, __m128i *acc_lo, __m128i *acc_md,
++                                      __m128i *acc_hi)
++{
++	int32x4_t p0, p1;
++	sw2_mul_su(vreinterpretq_s16_s32(vs), vreinterpretq_u16_s32(vt), &p0, &p1);
++
++	if (VMADM)
++	{
++		sw2_acc48_add(vreinterpretq_u32_s32(p0), vreinterpretq_u32_s32(p1), sw2_sign16(p0, p1), acc_lo, acc_md, acc_hi);
++		return sw2_sclamp_md_hi(*acc_md, *acc_hi);
++	}
++
++	const uint16x8_t w0 = vreinterpretq_u16_s32(p0), w1 = vreinterpretq_u16_s32(p1);
++	const int16x8_t md = vreinterpretq_s16_u16(vuzp2q_u16(w0, w1));
++	*acc_lo = vreinterpretq_s32_u16(vuzp1q_u16(w0, w1));
++	*acc_md = vreinterpretq_s32_s16(md);
++	*acc_hi = vreinterpretq_s32_s16(vshrq_n_s16(md, 15));
++	return *acc_md;
++}
++#else
+ template <bool VMADM>
+ static inline __m128i rsp_vmadm_vmudm(__m128i vs, __m128i vt, __m128i zero, __m128i *acc_lo, __m128i *acc_md,
+                                       __m128i *acc_hi)
+@@ -65,3 +87,4 @@ static inline __m128i rsp_vmadm_vmudm(__m128i vs, __m128i vt, __m128i zero, __m1
+ 		return hi;
+ 	}
+ }
++#endif
+diff --git a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmuln.h b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmuln.h
+index c7dadcd..a9921b6 100644
+--- a/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmuln.h
++++ b/mupen64plus-rsp-paraLLEl/arch/simd/rsp/vmuln.h
+@@ -5,6 +5,28 @@
+ // 'LICENSE', which is part of this source code package.
+ //
+ 
++#if defined(__aarch64__)
++template <bool VMADN>
++static inline __m128i rsp_vmadn_vmudn(__m128i vs, __m128i vt, __m128i zero, __m128i *acc_lo, __m128i *acc_md,
++                                      __m128i *acc_hi)
++{
++	int32x4_t p0, p1;
++	sw2_mul_su(vreinterpretq_s16_s32(vt), vreinterpretq_u16_s32(vs), &p0, &p1);
++
++	if (VMADN)
++	{
++		sw2_acc48_add(vreinterpretq_u32_s32(p0), vreinterpretq_u32_s32(p1), sw2_sign16(p0, p1), acc_lo, acc_md, acc_hi);
++		return rsp_uclamp_acc(*acc_lo, *acc_md, *acc_hi, zero);
++	}
++
++	const uint16x8_t w0 = vreinterpretq_u16_s32(p0), w1 = vreinterpretq_u16_s32(p1);
++	const int16x8_t md = vreinterpretq_s16_u16(vuzp2q_u16(w0, w1));
++	*acc_lo = vreinterpretq_s32_u16(vuzp1q_u16(w0, w1));
++	*acc_md = vreinterpretq_s32_s16(md);
++	*acc_hi = vreinterpretq_s32_s16(vshrq_n_s16(md, 15));
++	return *acc_lo;
++}
++#else
+ template <bool VMADN>
+ static inline __m128i rsp_vmadn_vmudn(__m128i vs, __m128i vt, __m128i zero, __m128i *acc_lo, __m128i *acc_md,
+                                       __m128i *acc_hi)
+@@ -87,3 +109,4 @@ static inline __m128i rsp_vmadn_vmudn(__m128i vs, __m128i vt, __m128i zero, __m1
+ 		return lo;
+ 	}
+ }
++#endif
 diff --git a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp b/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
 index 5100e60..d806e61 100644
 --- a/mupen64plus-rsp-paraLLEl/jit_allocator.cpp
@@ -1082,6 +1321,193 @@ index 243e677..33fccbd 100644
      jit_word_t		f, t, s;
  
      s = sysconf(_SC_PAGE_SIZE);
+diff --git a/mupen64plus-rsp-paraLLEl/rsp/ls.cpp b/mupen64plus-rsp-paraLLEl/rsp/ls.cpp
+index 0544dc3..a56db4f 100644
+--- a/mupen64plus-rsp-paraLLEl/rsp/ls.cpp
++++ b/mupen64plus-rsp-paraLLEl/rsp/ls.cpp
+@@ -1,4 +1,7 @@
+ #include "../state.hpp"
++#if defined(__aarch64__)
++#include <arm_neon.h>
++#endif
+ 
+ #ifdef TRACE_COP2
+ #include <stdio.h>
+@@ -26,6 +29,16 @@ extern "C"
+ 		else
+ 			arr[n] = (arr[n] & 0xff) | ((uint16_t)b << 8);
+ 	}
++
++	// Fast paths. With an even element and an even address, every byte pair
++	// fills exactly one 16-bit element and comes from (or goes to) one
++	// big-endian DMEM halfword, so the byte loops below can move halfwords.
++	static inline void load_halfwords(RSP::CPUState *rsp, unsigned rt, unsigned e, unsigned end, unsigned addr)
++	{
++		uint16_t *reg = rsp->cp2.regs[rt].e;
++		for (unsigned i = e; i < end; i += 2, addr += 2)
++			reg[i >> 1] = READ_MEM_U16(rsp->dmem, addr & 0xfff);
++	}
+ 	
+ 	// Load 8-bit
+ 	void RSP_LBV(RSP::CPUState *rsp, unsigned rt, unsigned e, int offset, unsigned base)
+@@ -55,6 +68,11 @@ extern "C"
+ 		TRACE_LS(LSV);
+ 		unsigned addr = rsp->sr[base] + offset * 2;
+ 		const unsigned end = (e > 14) ? 16 : (e + 2);
++		if (!((e | addr) & 1))
++		{
++			load_halfwords(rsp, rt, e, end, addr);
++			return;
++		}
+ 		for (unsigned i = e; i < end; i++)
+ 			writeByteToHalfWords(rsp->cp2.regs[rt].e, i & 0xf, READ_MEM_U8(rsp->dmem, addr++ & 0xfff));
+ 	}
+@@ -81,6 +99,11 @@ extern "C"
+ 		TRACE_LS(LLV);
+ 		unsigned addr = rsp->sr[base] + offset * 4;
+ 		const unsigned end = (e > 12) ? 16 : (e + 4);
++		if (!((e | addr) & 1))
++		{
++			load_halfwords(rsp, rt, e, end, addr);
++			return;
++		}
+ 		for (unsigned i = e; i < end; i++)
+ 			writeByteToHalfWords(rsp->cp2.regs[rt].e, i & 0xf, READ_MEM_U8(rsp->dmem, addr++ & 0xfff));
+ 	}
+@@ -95,6 +118,13 @@ extern "C"
+ 		fprintf(stderr, "SLV 0x%x, e = %u\n", addr, e);
+ #endif
+ 
++		if (!((e | addr) & 1))
++		{
++			const uint16_t *reg = rsp->cp2.regs[rt].e;
++			WRITE_MEM_U16(rsp->dmem, addr, reg[(e & 15) >> 1]);
++			WRITE_MEM_U16(rsp->dmem, addr + 2, reg[((e + 2) & 15) >> 1]);
++			return;
++		}
+ 		for (unsigned i = e; i < e + 4; i++)
+ 			WRITE_MEM_U8(rsp->dmem, addr++, byteFromHalfWords(rsp->cp2.regs[rt].e, i & 0xf));
+ 	}
+@@ -105,6 +135,11 @@ extern "C"
+ 		TRACE_LS(LDV);
+ 		unsigned addr = rsp->sr[base] + offset * 8;
+ 		const unsigned end = (e > 8) ? 16 : (e + 8);
++		if (!((e | addr) & 1))
++		{
++			load_halfwords(rsp, rt, e, end, addr);
++			return;
++		}
+ 		for (unsigned i = e; i < end; i++)
+ 			writeByteToHalfWords(rsp->cp2.regs[rt].e, i & 0xf, READ_MEM_U8(rsp->dmem, addr++ & 0xfff));
+ 	}
+@@ -147,6 +182,15 @@ extern "C"
+ 		addr &= ~7;
+ 
+ 		auto *reg = rsp->cp2.regs[rt].e;
++#if defined(__aarch64__)
++		if (index == 0)
++		{
++			// sw2 packed fast path: the 8 big-endian bytes at addr, one per element.
++			const uint8x8_t b = vrev32_u8(vld1_u8(reinterpret_cast<const uint8_t *>(rsp->dmem + (addr >> 2))));
++			vst1q_u16(reg, vshll_n_u8(b, 8));
++			return;
++		}
++#endif
+ 		for (unsigned i = 0; i < 8; i++)
+ 			reg[i] = READ_MEM_U8(rsp->dmem, (addr + (i + index & 0xf)) & 0xfff) << 8;
+ 	}
+@@ -157,6 +201,15 @@ extern "C"
+ 		unsigned addr = (rsp->sr[base] + offset * 8) & 0xfff;
+ 		auto *reg = rsp->cp2.regs[rt].e;
+ 
++#if defined(__aarch64__)
++		if (e == 0 && (addr & 7) == 0)
++		{
++			// sw2 packed fast path: elements 0-7 shifted right by 8, as big-endian bytes.
++			const uint8x8_t b = vshrn_n_u16(vld1q_u16(reg), 8);
++			vst1_u8(reinterpret_cast<uint8_t *>(rsp->dmem + (addr >> 2)), vrev32_u8(b));
++			return;
++		}
++#endif
+ 		for (unsigned i = e; i < e + 8; i++) {
+ 			const unsigned shift = ((i & 0xf) < 8) ? 8 : 7;
+ 			WRITE_MEM_U8(rsp->dmem, addr++ & 0xfff, int16_t(reg[i & 7]) >> shift);
+@@ -174,6 +227,15 @@ extern "C"
+ 		addr &= ~7;
+ 
+ 		auto *reg = rsp->cp2.regs[rt].e;
++#if defined(__aarch64__)
++		if (index == 0)
++		{
++			// sw2 packed fast path: the 8 big-endian bytes at addr, one per element.
++			const uint8x8_t b = vrev32_u8(vld1_u8(reinterpret_cast<const uint8_t *>(rsp->dmem + (addr >> 2))));
++			vst1q_u16(reg, vshll_n_u8(b, 7));
++			return;
++		}
++#endif
+ 		for (unsigned i = 0; i < 8; i++)
+ 			reg[i] = READ_MEM_U8(rsp->dmem, (addr + (i + index & 0xf)) & 0xfff) << 7;
+ 	}
+@@ -184,6 +246,15 @@ extern "C"
+ 		unsigned addr = (rsp->sr[base] + offset * 8) & 0xfff;
+ 		auto *reg = rsp->cp2.regs[rt].e;
+ 
++#if defined(__aarch64__)
++		if (e == 0 && (addr & 7) == 0)
++		{
++			// sw2 packed fast path: elements 0-7 shifted right by 7, as big-endian bytes.
++			const uint8x8_t b = vshrn_n_u16(vld1q_u16(reg), 7);
++			vst1_u8(reinterpret_cast<uint8_t *>(rsp->dmem + (addr >> 2)), vrev32_u8(b));
++			return;
++		}
++#endif
+ 		for (unsigned i = e; i < e + 8; i++) {
+ 			const unsigned shift = ((i & 0xf) < 8) ? 7 : 8;
+ 			WRITE_MEM_U8(rsp->dmem, addr++ & 0xfff, int16_t(reg[i & 7]) >> shift);
+@@ -316,6 +387,21 @@ extern "C"
+ 		unsigned addr = rsp->sr[base] + offset * 16;
+ 		unsigned end = 16 + e - (addr & 0xf);
+ 		if (end > 16) end = 16;
++#if defined(__aarch64__)
++		if (e == 0 && (addr & 0xf) == 0)
++		{
++			// Whole aligned quad: DMEM words are host-order, so swap the two
++			// halfwords of each word to get big-endian element order.
++			const uint32x4_t w = vld1q_u32(rsp->dmem + ((addr & 0xfff) >> 2));
++			vst1q_u16(rsp->cp2.regs[rt].e, vrev32q_u16(vreinterpretq_u16_u32(w)));
++			return;
++		}
++#endif
++		if (!((e | addr) & 1))
++		{
++			load_halfwords(rsp, rt, e, end, addr);
++			return;
++		}
+ 
+ 		for (unsigned i = e; i < end; i++)
+ 			writeByteToHalfWords(rsp->cp2.regs[rt].e, i & 0xf, READ_MEM_U8(rsp->dmem, addr++ & 0xfff));
+@@ -327,6 +413,21 @@ extern "C"
+ 		unsigned addr = (rsp->sr[base] + offset * 16) & 0xfff;
+ 		
+ 		const unsigned end = e + (16 - (addr & 15));
++#if defined(__aarch64__)
++		if (e == 0 && (addr & 15) == 0)
++		{
++			const uint16x8_t v = vld1q_u16(rsp->cp2.regs[rt].e);
++			vst1q_u32(rsp->dmem + (addr >> 2), vreinterpretq_u32_u16(vrev32q_u16(v)));
++			return;
++		}
++#endif
++		if (!((e | addr) & 1))
++		{
++			const uint16_t *reg = rsp->cp2.regs[rt].e;
++			for (unsigned i = e; i < end; i += 2, addr += 2)
++				WRITE_MEM_U16(rsp->dmem, addr, reg[(i & 15) >> 1]);
++			return;
++		}
+ 		for (unsigned i = e; i < end; i++)
+ 			WRITE_MEM_U8(rsp->dmem, addr++, byteFromHalfWords(rsp->cp2.regs[rt].e, i & 15));
+ 	}
 diff --git a/mupen64plus-rsp-paraLLEl/rsp_jit.cpp b/mupen64plus-rsp-paraLLEl/rsp_jit.cpp
 index 2052404..fd73b85 100644
 --- a/mupen64plus-rsp-paraLLEl/rsp_jit.cpp
@@ -1119,7 +1545,7 @@ index 2052404..fd73b85 100644
  #ifdef TRACE_DISASM
  	printf(" === DISASM ===\n");
 diff --git a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp
-index 5220cbc..754ed2a 100644
+index 5220cbc..a5679f2 100644
 --- a/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp
 +++ b/mupen64plus-video-paraLLEl/parallel-rdp/parallel-rdp/command_ring.cpp
 @@ -26,6 +26,8 @@
@@ -1197,7 +1623,7 @@ index 5220cbc..754ed2a 100644
  }
  
  void CommandRing::thread_loop()
-@@ -96,21 +115,38 @@ void CommandRing::thread_loop()
+@@ -96,21 +115,48 @@ void CommandRing::thread_loop()
  
  	std::vector<uint32_t> tmp_buffer;
  	tmp_buffer.reserve(64);
@@ -1213,9 +1639,15 @@ index 5220cbc..754ed2a 100644
  		{
 -			std::unique_lock<std::mutex> holder{lock};
 -			if (cond.wait_for(holder, std::chrono::microseconds(500), [this]() { return write_count > read_count; }))
-+			// Spin briefly: commands usually arrive in bursts.
++			// Spin before sleeping. Inside a graphics task the RSP flushes one or
++			// two commands every 15-20 us, and waking a sleeping consumer costs the
++			// producer a mutex and a kernel call (about 3.4 us on Switch 2). Spin
++			// for a fixed time, not an iteration count: 2000 yields last only a
++			// few microseconds on these cores, so the consumer slept between
++			// nearly every flush.
 +			bool got = false;
-+			for (int i = 0; i < 2000 && !got; i++)
++			const auto spin_end = std::chrono::steady_clock::now() + std::chrono::microseconds(250);
++			for (unsigned i = 0; !got; i++)
  			{
 -				uint32_t num_words = ring[read_count++ & mask];
 -				tmp_buffer.resize(num_words);
@@ -1223,7 +1655,11 @@ index 5220cbc..754ed2a 100644
 -					tmp_buffer[i] = ring[read_count++ & mask];
 +				got = write_count.load(std::memory_order_acquire) > r;
 +				if (!got)
++				{
 +					__asm__ volatile("yield");
++					if ((i & 63) == 63 && std::chrono::steady_clock::now() >= spin_end)
++						break;
++				}
  			}
 -			else
 +			if (!got)
@@ -1244,7 +1680,7 @@ index 5220cbc..754ed2a 100644
  			{
  				// If we don't receive commands at a steady pace,
  				// notify rendering thread that we should probably kick some work.
-@@ -120,15 +156,32 @@ void CommandRing::thread_loop()
+@@ -120,15 +166,32 @@ void CommandRing::thread_loop()
  			}
  		}
  

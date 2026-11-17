@@ -73,7 +73,7 @@ Generated code is written to a libounce `Jit`'s staging view and made runnable w
 | PCSX ReARMed | Dynarec with a compile thread. Stores through `sp` are checked for code written over (Gran Turismo runs its loader from the stack). |
 | PicoDrive | SH2 (32X) dynarec on the JIT, with far calls through x16. |
 | Flycast | SH4, ARM7 and DSP code in one JIT. Self-modifying code is tracked in software, because Horizon gives no write faults. Vulkan renderer. |
-| Mupen64Plus-Next | N64 dynarec and ParaLLEl-RSP's Lightning JIT on the JIT. ParaLLEl-RDP on Vulkan by default, with synchronous RDP off. volk's function pointers are renamed (`volk_sw2_rename.h`). GLideN64 needs `video_driver = "gl"` for this core, in `/retroarch/config/Mupen64Plus-Next/Mupen64Plus-Next.cfg`. |
+| Mupen64Plus-Next | N64 dynarec and ParaLLEl-RSP's Lightning JIT on the JIT. ParaLLEl-RDP on Vulkan by default, with synchronous RDP off. volk's function pointers are renamed (`volk_sw2_rename.h`). GLideN64 needs `video_driver = "gl"` for this core, in `/retroarch/config/Mupen64Plus-Next/Mupen64Plus-Next.cfg`. The RDP command ring's worker spins for 250 µs before it sleeps, so the RSP doesn't pay a wake-up per command. ParaLLEl-RSP's vector loads and stores have halfword and NEON fast paths, and its operand shuffle and multiply-accumulates use native NEON on AArch64. |
 
 ## Cores
 

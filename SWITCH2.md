@@ -120,7 +120,7 @@ The release builds 23 cores. Each one is its own NRO, `/retroarch/cores/<name>_l
 - **PlayStation**
   - PCSX ReARMed (`pcsx_rearmed`, dynarec): played. Gran Turismo with races; Metal Gear Solid
 - **Nintendo 64**
-  - Mupen64Plus-Next (`mupen64plus_next`, ParaLLEl-RDP on Vulkan): played. Paper Mario
+  - Mupen64Plus-Next (`mupen64plus_next`, ParaLLEl-RDP on Vulkan): played. Paper Mario, Ocarina of Time, Mario Party, Animal Forest, Conker's Bad Fur Day
 - **Dreamcast**
   - Flycast (`flycast`, JIT, Vulkan renderer): played. Sonic Adventure, Phantasy Star Online Ver. 2
 
@@ -132,4 +132,5 @@ Fixed during testing:
 - PCSX ReARMed: Gran Turismo froze while loading a race. Code it ran from the stack went stale.
 - PicoDrive: 32X games crashed. The SH2 dynarec now runs on the JIT.
 - Mupen64Plus-Next: Paper Mario's textures were wrong.
+- Mupen64Plus-Next: Conker's Bad Fur Day ran at about half speed in its heaviest scenes. Full speed since v0.3.1.
 - All cores: the first game started after any download (on a fresh install, RetroArch's offer to download controller profiles) crashed before the core ran. Fixed in v0.2.1.

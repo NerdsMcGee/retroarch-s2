@@ -67,15 +67,21 @@
 static enum frontend_fork switch_fork_mode = FRONTEND_FORK_NONE;
 
 #ifdef __SWITCH2__
-/* RetroArch's root folder: where the frontend NRO is installed. Every other
- * default folder, the config and the log live under it. */
+/* RetroArch's root folder, which holds cores/, assets/, the config and the
+ * other default folders. The release layout keeps the frontend in
+ * /switch/retroarch and the root in /retroarch; a single-folder install keeps
+ * the frontend in the root itself, anywhere on the card. */
 extern char switch_application_path[];
 
-static void switch_find_root(int argc, char *argv[], char *root, size_t len)
+#define SWITCH_RELEASE_ROOT SD_PREFIX "/retroarch/"
+
+/* Returns true for a single-folder install (root = the frontend's folder). */
+static bool switch_find_root(int argc, char *argv[], char *root, size_t len)
 {
    /* argv[0] is the running NRO when hbmenu, a forwarder or a core switch
-    * launched it. The frontend sits in the root and the cores in <root>/cores,
-    * so a folder named "cores" means the root is its parent. */
+    * launched it. A core NRO sits in <root>/cores. A frontend whose folder
+    * contains cores/ is a single-folder install; otherwise it is the release
+    * layout, whose root is /retroarch. */
    if (     argc >= 1 && argv && argv[0]
          && string_is_equal_noncase(path_get_extension(argv[0]), "nro")
          && (argv[0][0] == '/' || strstr(argv[0], ":/")))
@@ -91,14 +97,23 @@ static void switch_find_root(int argc, char *argv[], char *root, size_t len)
       name = strrchr(dir, '/');
       name = name ? name + 1 : dir;
       if (string_is_equal_noncase(name, "cores"))
+      {
          *name = '\0';                         /* "<root>/" */
-      else
-         strlcat(dir, "/", sizeof(dir));
-      strlcpy(root, dir, len);
-      return;
+         strlcpy(root, dir, len);
+         return !string_is_equal(dir, SWITCH_RELEASE_ROOT)
+             && !string_is_equal(dir, "sdmc:/retroarch/");
+      }
+      strlcat(dir, "/cores", sizeof(dir));     /* "<folder>/cores" */
+      if (path_is_directory(dir))
+      {
+         dir[strlen(dir) - 5] = '\0';          /* "<folder>/" */
+         strlcpy(root, dir, len);
+         return true;
+      }
    }
-   /* No usable path (a launch without arguments): the release layout. */
-   strlcpy(root, SD_PREFIX "/switch/retroarch/", len);
+   /* The release layout, or no usable path (a launch without arguments). */
+   strlcpy(root, SWITCH_RELEASE_ROOT, len);
+   return false;
 }
 #endif
 bool platform_switch_has_focus = true;
@@ -253,8 +268,8 @@ static void frontend_switch_get_env(
 {
    unsigned i;
 #ifdef __SWITCH2__
-   switch_find_root(argc ? *argc : 0, argv, g_defaults.dirs[DEFAULT_DIR_PORT],
-         sizeof(g_defaults.dirs[DEFAULT_DIR_PORT]));
+   const bool single_folder = switch_find_root(argc ? *argc : 0, argv,
+         g_defaults.dirs[DEFAULT_DIR_PORT], sizeof(g_defaults.dirs[DEFAULT_DIR_PORT]));
    /* ":" in saved paths means this folder, in the frontend and every core. */
    fill_pathname_join(switch_application_path, g_defaults.dirs[DEFAULT_DIR_PORT],
          "retroarch_switch.nro", PATH_MAX_LENGTH);
@@ -266,11 +281,15 @@ static void frontend_switch_get_env(
    logger_init();
 #elif defined(HAVE_FILE_LOGGER)
 #ifdef __SWITCH2__
+   if (single_folder)
    {
+      /* a single-folder install keeps its log inside the folder */
       char log_path[PATH_MAX_LENGTH];
       fill_pathname_join(log_path, g_defaults.dirs[DEFAULT_DIR_PORT], "retroarch-log.txt", sizeof(log_path));
       retro_main_log_file_init(log_path, true);
    }
+   else
+      retro_main_log_file_init(SD_PREFIX "/retroarch-log.txt", true);
 #else
    retro_main_log_file_init(SD_PREFIX "/retroarch-log.txt", true);
 #endif

@@ -2046,7 +2046,7 @@ bool config_get_array(config_file_t *conf, const char *key,
 bool config_get_path(config_file_t *conf, const char *key,
       char *s, size_t len)
 {
-#if defined(RARCH_CONSOLE) || !defined(RARCH_INTERNAL)
+#if (defined(RARCH_CONSOLE) && !defined(__SWITCH2__)) || !defined(RARCH_INTERNAL)
    return config_get_array(conf, key, s, len);
 #else
    const struct config_entry_list *entry = config_get_entry(conf, key);
@@ -2238,7 +2238,7 @@ void config_unset(config_file_t *conf, const char *key)
 
 void config_set_path(config_file_t *conf, const char *entry, const char *val)
 {
-#if defined(RARCH_CONSOLE) || !defined(RARCH_INTERNAL)
+#if (defined(RARCH_CONSOLE) && !defined(__SWITCH2__)) || !defined(RARCH_INTERNAL)
    config_set_string(conf, entry, val);
 #else
    char buf[PATH_MAX_LENGTH];

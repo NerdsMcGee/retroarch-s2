@@ -1131,8 +1131,19 @@ size_t fill_pathname_join_delim(char *s, const char *dir,
 
 size_t fill_pathname_expand_special(char *s, const char *in_path, size_t len)
 {
-#if !defined(RARCH_CONSOLE) && defined(RARCH_INTERNAL)
+#if (!defined(RARCH_CONSOLE) || defined(__SWITCH2__)) && defined(RARCH_INTERNAL)
    char *start = s;
+#if defined(__SWITCH2__)
+   /* Builds before folder independence saved paths under the fixed root
+    * /retroarch; read those as paths under the current root. */
+   char legacy[PATH_MAX_LENGTH];
+   if (!strncmp(in_path, "/retroarch/", 11) || !strcmp(in_path, "/retroarch"))
+   {
+      legacy[0] = ':';
+      strlcpy(legacy + 1, in_path + 10, sizeof(legacy) - 1);
+      in_path = legacy;
+   }
+#endif
    if (in_path[0] == '~' || in_path[0] == ':')
    {
       char app_dir[DIR_MAX_LENGTH];
@@ -1181,7 +1192,7 @@ size_t fill_pathname_expand_special(char *s, const char *in_path, size_t len)
 size_t fill_pathname_abbreviate_special(char *s,
       const char *in_path, size_t len)
 {
-#if !defined(RARCH_CONSOLE) && defined(RARCH_INTERNAL)
+#if (!defined(RARCH_CONSOLE) || defined(__SWITCH2__)) && defined(RARCH_INTERNAL)
    unsigned i;
    const char *candidates[3];
    const char *notations[3];
@@ -1437,12 +1448,20 @@ void path_basedir_wrapper(char *s)
       last_slash[1] = '\0';
 }
 
-#if !defined(RARCH_CONSOLE) && defined(RARCH_INTERNAL)
+#if (!defined(RARCH_CONSOLE) || defined(__SWITCH2__)) && defined(RARCH_INTERNAL)
+#if defined(__SWITCH2__)
+/* Set by the Switch frontend at startup to <root>/retroarch_switch.nro, the
+ * same in the frontend and every core NRO, so ":" paths mean the root. */
+char switch_application_path[PATH_MAX_LENGTH];
+#endif
+
 size_t fill_pathname_application_path(char *s, size_t len)
 {
    if (len)
    {
-#if defined(_WIN32)
+#if defined(__SWITCH2__)
+      return strlcpy(s, switch_application_path, len);
+#elif defined(_WIN32)
 #if defined(LEGACY_WIN32_RUNTIME)
       DWORD ret;
 

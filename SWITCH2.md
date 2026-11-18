@@ -46,12 +46,19 @@ Each checkout gets its patch from `switch2/patches/` first (see Cores below).
 
 ## Layout on the SD card
 
-- `/switch/retroarch/retroarch_switch.nro`: the frontend (dummy core), the only entry in hbmenu.
-- `/retroarch/cores/<core>_libretro_libnx.nro`: RetroArch with one static core, chain-loaded by the frontend.
-- `/retroarch/assets`, `/retroarch/info`, `/retroarch/database/rdb`: the usual RetroArch support files.
-- `RARCH_LOG` goes to `/retroarch-log.txt` with `log_to_file = "true"`. The release has no debug tracing.
+Everything lives in one folder, wherever the frontend is installed. The release puts it in `/switch/retroarch`, but any folder works, for example `/switch/apps/retroarch`:
+
+- `retroarch_switch.nro`: the frontend (dummy core), the only entry in hbmenu.
+- `cores/<core>_libretro_libnx.nro`: RetroArch with one static core, chain-loaded by the frontend. `cores/savefiles`, `cores/savestates` and `cores/system` are next to them.
+- `assets`, `info`, `database/rdb`: the usual RetroArch support files.
+- `retroarch.cfg`, `config`, `playlists` and the other RetroArch folders are created there.
+- `RARCH_LOG` goes to `retroarch-log.txt` in the same folder with `log_to_file = "true"`. The release has no debug tracing.
+
+Each NRO finds the folder from its own path (`argv[0]`): the frontend's folder, or the parent of `cores`. Paths saved in `retroarch.cfg` and the playlists use RetroArch's `:/` notation for this folder, so a folder that has been used can still be moved. Builds up to v0.3.1 used a fixed `/retroarch` folder; paths under it in an old config or playlist are read as paths under the new folder.
 
 ## Switch 2 changes in the frontend
+
+- **Install folder:** `frontend/drivers/platform_switch.c` derives the root folder from `argv[0]` and falls back to `/switch/retroarch` without one. `fill_pathname_application_path` returns `<root>/retroarch_switch.nro` on Switch 2, and the `:` path helpers (`libretro-common/file/file_path.c`, `config_file.c`, `playlist.c`) are enabled there.
 
 - **Vulkan:** the `vk_switch` context (`gfx/drivers_context/switch_vk_ctx.c`) on the default `NWindow` through `VK_NN_vi_surface`.
   - OunceVK allows one vi surface per process, so the surface and its swapchain are kept across a video driver restart (`gfx/common/vulkan_common.c`).
@@ -73,11 +80,11 @@ Generated code is written to a libounce `Jit`'s staging view and made runnable w
 | PCSX ReARMed | Dynarec with a compile thread. Stores through `sp` are checked for code written over (Gran Turismo runs its loader from the stack). |
 | PicoDrive | SH2 (32X) dynarec on the JIT, with far calls through x16. |
 | Flycast | SH4, ARM7 and DSP code in one JIT. Self-modifying code is tracked in software, because Horizon gives no write faults. Vulkan renderer. |
-| Mupen64Plus-Next | N64 dynarec and ParaLLEl-RSP's Lightning JIT on the JIT. ParaLLEl-RDP on Vulkan by default, with synchronous RDP off. volk's function pointers are renamed (`volk_sw2_rename.h`). GLideN64 needs `video_driver = "gl"` for this core, in `/retroarch/config/Mupen64Plus-Next/Mupen64Plus-Next.cfg`. The RDP command ring's worker spins for 250 µs before it sleeps, so the RSP doesn't pay a wake-up per command. ParaLLEl-RSP's vector loads and stores have halfword and NEON fast paths, and its operand shuffle and multiply-accumulates use native NEON on AArch64. The SP and DP interrupts come after an RSP task's length (ParaLLEl-RSP counts its cycles) instead of a fixed 1000 counts, so games pace themselves like real hardware; a yield request brings a pending task's interrupt forward. |
+| Mupen64Plus-Next | N64 dynarec and ParaLLEl-RSP's Lightning JIT on the JIT. ParaLLEl-RDP on Vulkan by default, with synchronous RDP off. volk's function pointers are renamed (`volk_sw2_rename.h`). GLideN64 needs `video_driver = "gl"` for this core, in `config/Mupen64Plus-Next/Mupen64Plus-Next.cfg`. The RDP command ring's worker spins for 250 µs before it sleeps, so the RSP doesn't pay a wake-up per command. ParaLLEl-RSP's vector loads and stores have halfword and NEON fast paths, and its operand shuffle and multiply-accumulates use native NEON on AArch64. The SP and DP interrupts come after an RSP task's length (ParaLLEl-RSP counts its cycles) instead of a fixed 1000 counts, so games pace themselves like real hardware; a yield request brings a pending task's interrupt forward. |
 
 ## Cores
 
-The release builds 23 cores. Each one is its own NRO, `/retroarch/cores/<name>_libretro_libnx.nro`.
+The release builds 23 cores. Each one is its own NRO, `cores/<name>_libretro_libnx.nro`.
 
 `switch2/patches/` holds one patch per core (`git apply` inside the core checkout). Each adds a `libounce` platform, and adds Switch 2 code where needed. Flycast's patch is for libretro/flycast at 6db95c1.
 

@@ -636,7 +636,7 @@ void path_basedir_wrapper(char *s);
  **/
 size_t fill_pathname_slash(char *s, size_t len);
 
-#if !defined(RARCH_CONSOLE) && defined(RARCH_INTERNAL)
+#if (!defined(RARCH_CONSOLE) || defined(__SWITCH2__)) && defined(RARCH_INTERNAL)
 size_t fill_pathname_application_path(char *s, size_t len);
 size_t fill_pathname_application_dir(char *s, size_t len);
 size_t fill_pathname_home_dir(char *s, size_t len);

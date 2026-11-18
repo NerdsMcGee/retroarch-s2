@@ -65,6 +65,42 @@
 #include <compat/strl.h>
 
 static enum frontend_fork switch_fork_mode = FRONTEND_FORK_NONE;
+
+#ifdef __SWITCH2__
+/* RetroArch's root folder: where the frontend NRO is installed. Every other
+ * default folder, the config and the log live under it. */
+extern char switch_application_path[];
+
+static void switch_find_root(int argc, char *argv[], char *root, size_t len)
+{
+   /* argv[0] is the running NRO when hbmenu, a forwarder or a core switch
+    * launched it. The frontend sits in the root and the cores in <root>/cores,
+    * so a folder named "cores" means the root is its parent. */
+   if (     argc >= 1 && argv && argv[0]
+         && string_is_equal_noncase(path_get_extension(argv[0]), "nro")
+         && (argv[0][0] == '/' || strstr(argv[0], ":/")))
+   {
+      char dir[PATH_MAX_LENGTH];
+      char *name;
+      size_t n;
+      strlcpy(dir, argv[0], sizeof(dir));
+      path_basedir(dir);                       /* "<folder>/" */
+      n = strlen(dir);
+      while (n > 1 && dir[n - 1] == '/')
+         dir[--n] = '\0';                      /* "<folder>" */
+      name = strrchr(dir, '/');
+      name = name ? name + 1 : dir;
+      if (string_is_equal_noncase(name, "cores"))
+         *name = '\0';                         /* "<root>/" */
+      else
+         strlcat(dir, "/", sizeof(dir));
+      strlcpy(root, dir, len);
+      return;
+   }
+   /* No usable path (a launch without arguments): the release layout. */
+   strlcpy(root, SD_PREFIX "/switch/retroarch/", len);
+}
+#endif
 bool platform_switch_has_focus = true;
 
 char *SWITCH_CPU_PROFILES[] = {
@@ -187,7 +223,7 @@ static void get_first_valid_core(char *path_return, size_t len)
 
    path_return[0] = '\0';
 
-   if ((dir = opendir(SD_PREFIX "/retroarch/cores")))
+   if ((dir = opendir(g_defaults.dirs[DEFAULT_DIR_CORE])))
    {
       size_t ext_len = strlen(extension);
       while ((ent = readdir(dir)))
@@ -199,7 +235,7 @@ static void get_first_valid_core(char *path_return, size_t len)
          if (   name_len > ext_len
              && !strcmp(ent->d_name + name_len - ext_len, extension))
          {
-            size_t _len = strlcpy(path_return, SD_PREFIX "/retroarch/cores", len);
+            size_t _len = strlcpy(path_return, g_defaults.dirs[DEFAULT_DIR_CORE], len);
             _len += strlcpy_lit(path_return + _len,
                   "/",
                   len           - _len);
@@ -216,16 +252,31 @@ static void frontend_switch_get_env(
       int *argc, char *argv[], void *args, void *params_data)
 {
    unsigned i;
+#ifdef __SWITCH2__
+   switch_find_root(argc ? *argc : 0, argv, g_defaults.dirs[DEFAULT_DIR_PORT],
+         sizeof(g_defaults.dirs[DEFAULT_DIR_PORT]));
+   /* ":" in saved paths means this folder, in the frontend and every core. */
+   fill_pathname_join(switch_application_path, g_defaults.dirs[DEFAULT_DIR_PORT],
+         "retroarch_switch.nro", PATH_MAX_LENGTH);
+#else
+   fill_pathname_basedir(g_defaults.dirs[DEFAULT_DIR_PORT], SD_PREFIX "/retroarch/retroarch_switch.nro", sizeof(g_defaults.dirs[DEFAULT_DIR_PORT]));
+#endif
 #ifndef IS_SALAMANDER
 #if defined(HAVE_LOGGER)
    logger_init();
 #elif defined(HAVE_FILE_LOGGER)
+#ifdef __SWITCH2__
+   {
+      char log_path[PATH_MAX_LENGTH];
+      fill_pathname_join(log_path, g_defaults.dirs[DEFAULT_DIR_PORT], "retroarch-log.txt", sizeof(log_path));
+      retro_main_log_file_init(log_path, true);
+   }
+#else
    retro_main_log_file_init(SD_PREFIX "/retroarch-log.txt", true);
+#endif
    verbosity_enable();
 #endif
 #endif
-
-   fill_pathname_basedir(g_defaults.dirs[DEFAULT_DIR_PORT], SD_PREFIX "/retroarch/retroarch_switch.nro", sizeof(g_defaults.dirs[DEFAULT_DIR_PORT]));
 
    fill_pathname_join(g_defaults.dirs[DEFAULT_DIR_CORE], g_defaults.dirs[DEFAULT_DIR_PORT],
                       "cores", sizeof(g_defaults.dirs[DEFAULT_DIR_CORE]));

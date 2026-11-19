@@ -62,7 +62,9 @@ Each NRO finds its root folder from its own path (`argv[0]`): a core uses the pa
 - **Install folder:** `frontend/drivers/platform_switch.c` derives the root folder from `argv[0]` (the release layout's `/retroarch`, or a single-folder install's own folder) and falls back to `/retroarch` without one. `fill_pathname_application_path` returns `<root>/retroarch_switch.nro` on Switch 2, and the `:` path helpers (`libretro-common/file/file_path.c`, `config_file.c`, `playlist.c`) are enabled there.
 
 - **Vulkan:** the `vk_switch` context (`gfx/drivers_context/switch_vk_ctx.c`) on the default `NWindow` through `VK_NN_vi_surface`.
-  - OunceVK allows one vi surface per process, so the surface and its swapchain are kept across a video driver restart (`gfx/common/vulkan_common.c`).
+  - OunceVK allows one vi surface per process, so the surface and its swapchain are kept across a video driver restart (`gfx/common/vulkan_common.c`). After a core has used Vulkan, RetroArch stays on Vulkan until it restarts, even when the config asks for `gl` (`gfx/video_driver.c`), because GL can't get a surface in that process any more.
+- **Output size:** 1920x1080 docked and in handheld mode. The window is the same size in both modes (`nwindowSetModeDimensions`). The display reports no DPI, so the menu scales from the 1080p size.
+- **Dock and undock:** the default window's VI2 layer is attached to one display. When the operation mode changes, both contexts move the layer to the new display: detach, clear the selection, attach, select (`switch_ctx_reattach_layer` in `switch_ctx.c`). Without this the TV or the handheld screen stays black.
 - **OpenGL ES 3:** the EGL context in `switch_ctx.c`, with GLES2 as a fallback.
   - GL function pointers in `nx_glsym.h` are renamed (`rsw2_` prefix) so they don't collide with libounce's GL symbols.
 - **Threaded video:** a GL context hand-off between the core's thread and the video thread (`gfx/video_thread_wrapper.c`). The take-back is deferred until the core next uses GL, and the core holds the context around `retro_deinit`.
@@ -78,7 +80,7 @@ Generated code is written to a libounce `Jit`'s staging view and made runnable w
 
 | Core | Notes |
 |---|---|
-| PCSX ReARMed | Dynarec with a compile thread. Stores through `sp` are checked for code written over (Gran Turismo runs its loader from the stack). |
+| PCSX ReARMed | Dynarec with a compile thread. Stores through `sp` are checked for code written over (Gran Turismo runs its loader from the stack), and so are stores in a branch delay slot. With the HLE BIOS, `ReturnFromException` stops the dynarec while an exception handler runs nested, so the handler's loop sees it ended. Without this, Gran Turismo froze loading a race when there was no BIOS file. |
 | PicoDrive | SH2 (32X) dynarec on the JIT, with far calls through x16. |
 | Flycast | SH4, ARM7 and DSP code in one JIT. Self-modifying code is tracked in software, because Horizon gives no write faults. Vulkan renderer. |
 | Mupen64Plus-Next | N64 dynarec and ParaLLEl-RSP's Lightning JIT on the JIT. ParaLLEl-RDP on Vulkan by default, with synchronous RDP off. volk's function pointers are renamed (`volk_sw2_rename.h`). GLideN64 needs `video_driver = "gl"` for this core, in `/retroarch/config/Mupen64Plus-Next/Mupen64Plus-Next.cfg`. The RDP command ring's worker spins for 250 µs before it sleeps, so the RSP doesn't pay a wake-up per command. ParaLLEl-RSP's vector loads and stores have halfword and NEON fast paths, and its operand shuffle and multiply-accumulates use native NEON on AArch64. The SP and DP interrupts come after an RSP task's length (ParaLLEl-RSP counts its cycles) instead of a fixed 1000 counts, so games pace themselves like real hardware; a yield request brings a pending task's interrupt forward. |
@@ -138,6 +140,8 @@ MSU-1 with bsnes: keep the ROM and its MSU-1 files loose in one folder, with the
 
 Fixed during testing:
 - PCSX ReARMed: Gran Turismo froze while loading a race. Code it ran from the stack went stale.
+- PCSX ReARMed: without a BIOS file, Gran Turismo froze or went black loading a race, every time with the compile thread off and sometimes with it on. Fixed in v0.4.1.
+- Frontend: after docking or undocking, the new screen stayed black. Handheld mode ran at 720p with an oversized menu. Returning from a Vulkan core to a GL menu froze. Fixed in v0.4.1.
 - PicoDrive: 32X games crashed. The SH2 dynarec now runs on the JIT.
 - Mupen64Plus-Next: Paper Mario's textures were wrong.
 - Mupen64Plus-Next: Conker's Bad Fur Day ran at about half speed in its heaviest scenes. Full speed since v0.3.1.

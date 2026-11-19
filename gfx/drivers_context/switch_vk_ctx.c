@@ -46,21 +46,27 @@ typedef struct
    int swap_interval;
    unsigned dims;                /* VIDEO_SCALE_PACK */
    unsigned refresh_rate_x1000;
+   int operation_mode;           /* AppletOperationMode last seen, -1 before */
 } switch_vk_ctx_data_t;
 
-/* The size the console's output has now: handheld or docked */
+/* The output size. The Switch 2's built-in screen is 1920x1080, the same as
+ * the docked output, so handheld mode keeps 1080p. (Switch 1's handheld size,
+ * 1280x720, used to apply here and dropped the output to 720p when undocked.) */
 static unsigned switch_vk_ctx_mode_dims(void)
 {
-   switch (appletGetOperationMode())
-   {
-      case AppletOperationMode_Console:
-         return VIDEO_SCALE_PACK(1920, 1080);
-      case AppletOperationMode_Handheld:
-      default:
-         break;
-   }
-   return VIDEO_SCALE_PACK(1280, 720);
+   return VIDEO_SCALE_PACK(1920, 1080);
 }
+
+/* Sizes the window for handheld and docked mode separately, so libounce
+ * follows the console between the two (nwindowSetModeDimensions); both are
+ * this size. */
+static void switch_vk_ctx_size_window(NWindow *win, unsigned dims)
+{
+   nwindowSetModeDimensions(win,
+         VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims),
+         VIDEO_SCALE_W(dims), VIDEO_SCALE_H(dims));
+}
+
 
 static void switch_vk_ctx_destroy(void *data)
 {
@@ -97,7 +103,8 @@ static void *switch_vk_ctx_init(void *video_driver)
 
    ctx->win = nwindowGetDefault();
    ctx->dims = switch_vk_ctx_mode_dims();
-   nwindowSetDimensions(ctx->win, VIDEO_SCALE_W(ctx->dims), VIDEO_SCALE_H(ctx->dims));
+   ctx->operation_mode = -1;
+   switch_vk_ctx_size_window(ctx->win, ctx->dims);
 
    if (!vulkan_context_init(&ctx->vk, VULKAN_WSI_SWITCH))
    {
@@ -117,13 +124,24 @@ static void switch_vk_ctx_check_window(void *data, bool *quit,
 {
    switch_vk_ctx_data_t *ctx = (switch_vk_ctx_data_t*)data;
    unsigned new_dims         = switch_vk_ctx_mode_dims();
+   int mode                  = (int)appletGetOperationMode();
+
+   if (mode != ctx->operation_mode)
+   {
+      RARCH_LOG("[Vulkan] Console is %s, output %ux%u.\n",
+            mode == AppletOperationMode_Console ? "docked" : "handheld",
+            VIDEO_SCALE_W(new_dims), VIDEO_SCALE_H(new_dims));
+      if (ctx->operation_mode != -1)
+         switch_ctx_reattach_layer(ctx->win);
+      ctx->operation_mode = mode;
+   }
 
    *resize = (ctx->vk.flags & VK_DATA_FLAG_NEED_NEW_SWAPCHAIN) ? true : false;
 
    if (new_dims != ctx->dims)
    {
       ctx->dims = new_dims;
-      nwindowSetDimensions(ctx->win, VIDEO_SCALE_W(new_dims), VIDEO_SCALE_H(new_dims));
+      switch_vk_ctx_size_window(ctx->win, new_dims);
       *resize   = true;
    }
    if (*dims != ctx->dims)
@@ -162,7 +180,7 @@ static bool switch_vk_ctx_set_video_mode(void *data,
    switch_vk_ctx_data_t *ctx = (switch_vk_ctx_data_t*)data;
 
    ctx->dims = switch_vk_ctx_mode_dims();
-   nwindowSetDimensions(ctx->win, VIDEO_SCALE_W(ctx->dims), VIDEO_SCALE_H(ctx->dims));
+   switch_vk_ctx_size_window(ctx->win, ctx->dims);
 
    if (!vulkan_surface_create(&ctx->vk, VULKAN_WSI_SWITCH,
             NULL, ctx->win, ctx->dims, ctx->swap_interval))

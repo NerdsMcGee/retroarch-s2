@@ -6058,6 +6058,21 @@ bool video_driver_find_driver(
       }
    }
 
+#if defined(__SWITCH2__) && defined(HAVE_VULKAN)
+   /* The console allows one Vulkan surface per process, so it is kept
+    * across driver restarts and holds the display until RetroArch exits:
+    * GL (or another driver) cannot start in the meantime. Stay on Vulkan;
+    * the configured driver is used again from the next start. */
+   if (     vulkan_switch2_holds_display()
+         && !string_is_equal(settings->arrays.video_driver, "vulkan"))
+   {
+      RARCH_LOG("[Video] Vulkan holds the display until RetroArch restarts; "
+            "using it instead of \"%s\".\n", settings->arrays.video_driver);
+      video_st->current_video = &video_vulkan;
+      return true;
+   }
+#endif
+
    if (frontend_driver_has_get_video_driver_func())
    {
       if ((video_st->current_video = (video_driver_t*)

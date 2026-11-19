@@ -99,6 +99,15 @@ typedef struct
 
     float refresh_rate;
     NWindow *win;
+#ifdef __SWITCH2__
+    int operation_mode;   /* AppletOperationMode last seen, -1 before */
+#endif
 } switch_ctx_data_t;
+
+#ifdef __SWITCH2__
+/* Moves the default window's picture to the display the console now uses
+ * (after docking or undocking). In switch_ctx.c, shared by both contexts. */
+void switch_ctx_reattach_layer(NWindow *win);
+#endif
 
 #endif

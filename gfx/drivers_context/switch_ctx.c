@@ -32,6 +32,40 @@
 /* TODO/FIXME - global referenced */
 extern bool platform_switch_has_focus;
 
+#ifdef __SWITCH2__
+/* Docking or undocking moves the picture to the other display, but the
+ * window's VI2 layer stays attached as it was: the TV (or the built-in
+ * screen) stayed blank until a system overlay redrew it. Attach and select
+ * the layer again, in VI2's order: detach before the selection changes, then
+ * attach and select, as libounce opens the layer. The swapchain (Vulkan) or
+ * EGL surface (GL) keeps presenting to the same layer. */
+void switch_ctx_reattach_layer(NWindow *win)
+{
+   Vi2Display *display = NULL;
+   Vi2Layer *layer     = NULL;
+   Vi2Endpoint endpoint;
+   Result rc;
+
+   if (     R_FAILED(nwindowGetVi2Display(win, &display))
+         || R_FAILED(nwindowGetVi2Layer(win, &layer)))
+      return;
+
+   vi2CreateEndpoint(&endpoint, display, "default");
+   rc = vi2DetachLayer(layer);
+   if (R_SUCCEEDED(rc))
+      rc = vi2ClearLayerSelection(&endpoint);
+   if (R_SUCCEEDED(rc))
+      rc = vi2AttachLayer(layer, display);
+   if (R_SUCCEEDED(rc))
+      rc = vi2SelectLayer(layer, &endpoint);
+   vi2CloseEndpoint(&endpoint);
+
+   if (R_FAILED(rc))
+      RARCH_ERR("[Video] Failed to move the picture to the new display (0x%x).\n",
+            (unsigned)rc);
+}
+#endif
+
 
 void switch_ctx_destroy(void *data)
 {
@@ -49,6 +83,10 @@ void switch_ctx_destroy(void *data)
 static void switch_ctx_get_video_size(void *data,
       unsigned *dims)
 {
+#ifdef __SWITCH2__
+   /* The Switch 2's built-in screen is 1920x1080, like the docked output. */
+   *dims = VIDEO_SCALE_PACK(1920, 1080);
+#else
    switch (appletGetOperationMode())
    {
       default:
@@ -59,6 +97,7 @@ static void switch_ctx_get_video_size(void *data,
          *dims = VIDEO_SCALE_PACK(1920, 1080);
          break;
    }
+#endif
 }
 
 static void *switch_ctx_init(void *video_driver)
@@ -102,6 +141,9 @@ static void *switch_ctx_init(void *video_driver)
     /* Needs to be here */
     ctx_nx->win = nwindowGetDefault();
     nwindowSetDimensions(ctx_nx->win, 1920, 1080);
+#ifdef __SWITCH2__
+    ctx_nx->operation_mode = -1;
+#endif
 
 #ifdef HAVE_EGL
     if (!egl_init_context(&ctx_nx->egl, EGL_NONE, EGL_DEFAULT_DISPLAY,
@@ -125,6 +167,21 @@ static void switch_ctx_check_window(void *data, bool *quit,
     unsigned new_dims;
     switch_ctx_data_t *ctx_nx = (switch_ctx_data_t *)data;
     switch_ctx_get_video_size(data, &new_dims);
+
+#ifdef __SWITCH2__
+    {
+       int mode = (int)appletGetOperationMode();
+       if (mode != ctx_nx->operation_mode)
+       {
+          RARCH_LOG("[GL] Console is %s, output %ux%u.\n",
+                mode == AppletOperationMode_Console ? "docked" : "handheld",
+                VIDEO_SCALE_W(new_dims), VIDEO_SCALE_H(new_dims));
+          if (ctx_nx->operation_mode != -1)
+             switch_ctx_reattach_layer(ctx_nx->win);
+          ctx_nx->operation_mode = mode;
+       }
+    }
+#endif
 
     if (new_dims != *dims)
     {
@@ -297,6 +354,13 @@ bool switch_ctx_get_metrics(void *data,
    switch (type)
    {
       case DISPLAY_METRIC_DPI:
+#ifdef __SWITCH2__
+         /* No DPI on Switch 2: RetroArch then sizes the menu as a fixed
+          * fraction of the 1920x1080 output, so handheld shows the same
+          * layout as docked, as console menus do. (The 7.9" screen's real
+          * DPI makes RetroArch's small-screen scaling draw it 2.25x.) */
+         return false;
+#endif
          /* FIXME: DPI values should be obtained by querying
           * the hardware - these hard-coded values are a kludge */
          switch (appletGetOperationMode())

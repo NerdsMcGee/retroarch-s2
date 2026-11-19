@@ -70,6 +70,13 @@ static VkInstance   sw2_kept_instance;
 static VkSwapchainKHR sw2_kept_swapchain;
 static VkDevice       sw2_kept_device;
 static bool           sw2_keep_swapchain_now;
+
+/* True once a Vulkan surface has been made in this process: it is kept for
+ * the rest of the process, and no other driver can present meanwhile. */
+bool vulkan_switch2_holds_display(void)
+{
+   return sw2_kept_surface != VK_NULL_HANDLE;
+}
 #endif
 #ifdef HAVE_OPENXR
 #include "vulkan_openxr.h"

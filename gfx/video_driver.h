@@ -3146,6 +3146,9 @@ extern video_driver_t video_gl3;
 extern video_driver_t video_gl2;
 extern video_driver_t video_gl1;
 extern video_driver_t video_vulkan;
+#if defined(__SWITCH2__) && defined(HAVE_VULKAN)
+bool vulkan_switch2_holds_display(void);
+#endif
 extern video_driver_t video_metal;
 extern video_driver_t video_psp1;
 extern video_driver_t video_gxm;

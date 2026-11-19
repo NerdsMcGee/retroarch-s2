@@ -134,7 +134,7 @@ The release builds 24 cores. Each one is its own NRO, `/retroarch/cores/<name>_l
 - **Dreamcast**
   - Flycast (`flycast`, JIT, Vulkan renderer): played. Sonic Adventure, Phantasy Star Online Ver. 2
 - **Arcade**
-  - FinalBurn Neo (`fbneo`, Neo Geo, CPS1-3 and other boards): played. Metal Slug 3. ROM sets must match FBNeo's own DAT; Neo Geo games also need `neogeo.zip`, next to the ROMs or in `/retroarch/cores/system/fbneo/`.
+  - FinalBurn Neo (`fbneo`, Neo Geo, CPS1-3 and other boards): played. Metal Slug 3 (Neo Geo), Street Fighter III: 3rd Strike (CPS3, `sfiii3n`). ROM sets must match FBNeo's own DAT; Neo Geo games also need `neogeo.zip`, next to the ROMs or in `/retroarch/cores/system/fbneo/`.
 
 So far 12 cores are played, 2 boot, and 10 are not tested.
 

@@ -63,7 +63,7 @@ index a6333f2..18fa657 100644
  		// the manual only prescribes an isb
  		__asm__ volatile("isb");
 diff --git a/libpcsxcore/new_dynarec/new_dynarec.c b/libpcsxcore/new_dynarec/new_dynarec.c
-index fb99df6..b00e6ef 100644
+index fb99df6..06bebb2 100644
 --- a/libpcsxcore/new_dynarec/new_dynarec.c
 +++ b/libpcsxcore/new_dynarec/new_dynarec.c
 @@ -35,6 +35,44 @@
@@ -168,7 +168,7 @@ index fb99df6..b00e6ef 100644
      // invalidate the RX mirror (unsure if necessary, but just in case...)
      armDCacheFlush(&ndrc->tramp.f[i], sizeof(ndrc->tramp.f[i]));
  #endif
-@@ -3616,8 +3672,15 @@ static void do_store_smc_check(struct compile_state *st, int i,
+@@ -3616,12 +3672,21 @@ static void do_store_smc_check(struct compile_state *st, int i,
    //if (i_regs->waswritten & (1<<dops[i].rs1))
    //  return;
    // (naively) assume nobody will run code from stack
@@ -183,8 +183,15 @@ index fb99df6..b00e6ef 100644
 +#endif
  
    int j, imm_maxdiff = 32, imm_min = cinfo[i].imm, imm_max = cinfo[i].imm, count = 1;
++  // Deferred to the next store, whose check covers this one too. Not from a
++  // delay slot: when the branch is taken, the next store never runs.
    if (i < st->slen - 1 && dops[i+1].is_store && dops[i+1].rs1 == dops[i].rs1
-@@ -6707,10 +6770,20 @@ void new_dynarec_init(void)
+-      && abs(cinfo[i+1].imm - cinfo[i].imm) <= imm_maxdiff)
++      && abs(cinfo[i+1].imm - cinfo[i].imm) <= imm_maxdiff && !dops[i].is_ds)
+     return;
+   for (j = i - 1; j >= 0; j--) {
+     if (!dops[j].is_store || dops[j].rs1 != dops[i].rs1
+@@ -6707,10 +6772,20 @@ void new_dynarec_init(void)
    if (R_FAILED(rc))
      SysPrintf("jitCreate failed: %08x\n", rc);
    SysPrintf("jitCreate: RX: %p RW: %p type: %d\n", g_jit.rx_addr, g_jit.rw_addr, g_jit.type);
@@ -205,3 +212,60 @@ index fb99df6..b00e6ef 100644
    #else
    uintptr_t desired_addr = 0;
    int prot = PROT_READ | PROT_WRITE | PROT_EXEC;
+diff --git a/libpcsxcore/psxbios.c b/libpcsxcore/psxbios.c
+index 788e8a2..5c8540e 100644
+--- a/libpcsxcore/psxbios.c
++++ b/libpcsxcore/psxbios.c
+@@ -430,6 +430,20 @@ int psxBiosSoftcallEnded(void)
+ 	return pc0 == 0x80001000 || returned_from_exception();
+ }
+ 
++// ReturnFromException ends a nested softcall (see psxBios_ReturnFromException)
++// but the dynarec only leaves compiled code on regs->stop. Raised there while
++// nested, dropped here once the block loop has control again.
++static int softcall_stop;
++
++static void softcall_execute_block(void)
++{
++	psxCpu->ExecuteBlock(&psxRegs, EXEC_CALLER_HLE);
++	if (softcall_stop) {
++		softcall_stop = 0;
++		psxRegs.stop--;
++	}
++}
++
+ // TODO: get rid of this softCall() thing as recursive cpu calls cause
+ // complications with dynarecs
+ static inline void softCall(u32 pc) {
+@@ -445,7 +459,7 @@ static inline void softCall(u32 pc) {
+ 	psxCpu->Notify(R3000ACPU_NOTIFY_AFTER_LOAD, PTR_1);
+ 
+ 	while (!psxBiosSoftcallEnded() && ++lim < 0x100000)
+-		psxCpu->ExecuteBlock(&psxRegs, EXEC_CALLER_HLE);
++		softcall_execute_block();
+ 
+ 	psxCpu->Notify(R3000ACPU_NOTIFY_BEFORE_SAVE, PTR_1);
+ 	psxRegs.cpuInRecursion--;
+@@ -471,7 +485,7 @@ static inline void softCallInException(u32 pc) {
+ 	psxCpu->Notify(R3000ACPU_NOTIFY_AFTER_LOAD, PTR_1);
+ 
+ 	while (!psxBiosSoftcallEnded() && ++lim < 0x100000)
+-		psxCpu->ExecuteBlock(&psxRegs, EXEC_CALLER_HLE);
++		softcall_execute_block();
+ 
+ 	psxCpu->Notify(R3000ACPU_NOTIFY_BEFORE_SAVE, PTR_1);
+ 	psxRegs.cpuInRecursion--;
+@@ -2635,6 +2649,13 @@ static void psxBios_ReturnFromException() { // 17
+ 
+ 	use_cycles(53);
+ 	psxBranchTest(&psxRegs);
++
++	// returning from inside a softcall (a chain handler): leave the
++	// dynarec so the softcall loop sees it ended
++	if (psxRegs.cpuInRecursion && !softcall_stop) {
++		softcall_stop = 1;
++		psxRegs.stop++;
++	}
+ }
+ 
+ void psxBios_ResetEntryInt() { // 18

@@ -41,7 +41,7 @@ for spec in \
   "handy libretro-handy Makefile" \
   "prosystem libretro-prosystem Makefile" \
   "gambatte libretro-gambatte Makefile" \
-  "stella libretro-stella/src/os/libretro Makefile src/os/libretro"; do
+  "stella libretro-stella/src/os/libretro Makefile src/os/libretro"   "fbneo libretro-fbneo/src/burner/libretro Makefile"; do
   set -- $spec
   clean_make $SW2_CORES/$2 $3
   if python3 $V/switch2/build_core.py $1 $4 >> $LOG 2>&1; then say "OK $1"; else say "FAIL $1"; fi
@@ -104,7 +104,7 @@ if make -f Makefile.libounce HAVE_STATIC_DUMMY=1 -j10 > $L/frontend.log 2>&1 && 
 else say "FRONTEND FAIL"; exit 1; fi
 for name in snes9x snes9x2010 bsnes nestopia quicknes mesen gearboy sameboy vba_next genesis_plus_gx \
   gearsystem mednafen_pce_fast mednafen_supergrafx handy prosystem gambatte stella mgba picodrive \
-  fceumm pcsx_rearmed flycast mupen64plus_next; do
+  fceumm pcsx_rearmed flycast mupen64plus_next fbneo; do
   lib=$O/$name.a
   [ $name = flycast ] && lib=$O/flycast_jit.a
   if [ ! -f $lib ] || [ $lib -ot $STAMP ]; then say "NRO SKIP $name (no fresh .a)"; continue; fi

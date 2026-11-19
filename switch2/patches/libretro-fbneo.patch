@@ -1,0 +1,28 @@
+diff --git a/src/burner/libretro/Makefile b/src/burner/libretro/Makefile
+index 582d5ce..9c9ff3d 100644
+--- a/src/burner/libretro/Makefile
++++ b/src/burner/libretro/Makefile
+@@ -316,6 +316,23 @@ else ifeq ($(platform), libnx)
+ 	INCLUDE_7Z_SUPPORT = 1
+ 	ENDIANNESS_DEFINES := -DLSB_FIRST
+ 
++# Nintendo Switch 2 (libounce)
++else ifeq ($(platform), libounce)
++	include $(DEVKITPRO)/libounce/switch2_rules
++	AR="$(DEVKITPRO)/devkitA64/bin/aarch64-none-elf-ar$(BINARY_EXT)"
++	EXT=a
++	TARGET := $(TARGET_NAME)_libretro_libnx.$(EXT)
++	# no mmap in libounce; plutovg's font loading from disk isn't used
++	DEFINES := -DSWITCH=1 -U__linux__ -U__linux -DRARCH_INTERNAL -DPLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD
++	CFLAGS	:=	$(DEFINES) $(SWITCH2_CPU) -mtp=soft 		-fPIE -I$(LIBNX)/include/ -ffunction-sections -fdata-sections -ftls-model=local-exec -specs=$(LIBNX)/switch.specs
++	CFLAGS += $(INCDIRS)
++	CFLAGS	+=	$(INCLUDE)  -D__SWITCH__ -D__SWITCH2__ -DHAVE_LIBNX
++	CXXFLAGS := $(ASFLAGS) $(CFLAGS) -fno-rtti -std=gnu++11
++	CFLAGS += -std=gnu11
++	STATIC_LINKING = 1
++	INCLUDE_7Z_SUPPORT = 1
++	ENDIANNESS_DEFINES := -DLSB_FIRST
++
+ # Funkey S
+ else ifeq ($(platform), funkey)
+ 	TARGET := $(TARGET_NAME)_libretro.so

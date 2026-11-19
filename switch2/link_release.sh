@@ -1,7 +1,7 @@
 #!/bin/bash
 # Release link without rebuilding the cores: the frontend (this checkout)
 # from zero objects, then one NRO per core from the archives already in
-# $SW2_OUT (switch2/rebuild_release.sh builds them), 23 cores. Paths come from
+# $SW2_OUT (switch2/rebuild_release.sh builds them), 24 cores. Paths come from
 # switch2/env.sh. NROs and logs go to out/release.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/env.sh" || exit 1
 shopt -s nullglob
@@ -24,7 +24,7 @@ else say "FRONTEND FAIL"; exit 1; fi
 
 for name in snes9x snes9x2010 bsnes nestopia quicknes mesen gearboy sameboy vba_next genesis_plus_gx \
   gearsystem mednafen_pce_fast mednafen_supergrafx handy prosystem gambatte stella mgba picodrive \
-  fceumm pcsx_rearmed flycast mupen64plus_next; do
+  fceumm pcsx_rearmed flycast mupen64plus_next fbneo; do
   lib=$O/$name.a
   [ $name = flycast ] && lib=$O/flycast_jit.a
   if [ ! -f $lib ]; then say "NRO SKIP $name (no $lib)"; continue; fi

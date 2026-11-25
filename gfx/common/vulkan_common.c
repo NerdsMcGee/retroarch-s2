@@ -2948,6 +2948,64 @@ static void vulkan_context_wait_frames(gfx_ctx_vulkan_data_t *vk)
       vkResetFences(vk->context.device, 1, &vk->context.present_fence);
 }
 
+/* An image acquired with a semaphore that nothing has waited on yet (the
+ * acquire right after a present, or an acquire never rendered to): the
+ * presentation engine may still signal that semaphore, and destroying a
+ * semaphore with a signal pending is invalid. One empty batch that waits on
+ * every such semaphore, and its fence, consume the signals before the
+ * swapchain's semaphores are destroyed. */
+static void vulkan_drain_acquire_semaphores(gfx_ctx_vulkan_data_t *vk)
+{
+   VkSemaphore sems[VULKAN_MAX_SWAPCHAIN_IMAGES + 1];
+   VkPipelineStageFlags stages[VULKAN_MAX_SWAPCHAIN_IMAGES + 1];
+   VkFenceCreateInfo fence_info;
+   VkSubmitInfo submit;
+   VkFence fence = VK_NULL_HANDLE;
+   VkResult res;
+   unsigned i;
+   unsigned n    = 0;
+
+   if (     (vk->context.flags & VK_CTX_FLAG_HAS_ACQUIRED_SWAPCHAIN)
+         && vk->context.swapchain_acquire_semaphore != VK_NULL_HANDLE)
+      sems[n++] = vk->context.swapchain_acquire_semaphore;
+   for (i = 0; i < vk->context.num_stale_acquire_semaphores; i++)
+      if (vk->context.swapchain_stale_acquire_semaphores[i] != VK_NULL_HANDLE)
+         sems[n++] = vk->context.swapchain_stale_acquire_semaphores[i];
+   if (n == 0)
+      return;
+
+   for (i = 0; i < n; i++)
+      stages[i] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+
+   fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+   fence_info.pNext = NULL;
+   fence_info.flags = 0;
+   if (vkCreateFence(vk->context.device, &fence_info, NULL, &fence) != VK_SUCCESS)
+      return;
+
+   submit.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+   submit.pNext                = NULL;
+   submit.waitSemaphoreCount   = n;
+   submit.pWaitSemaphores      = sems;
+   submit.pWaitDstStageMask    = stages;
+   submit.commandBufferCount   = 0;
+   submit.pCommandBuffers      = NULL;
+   submit.signalSemaphoreCount = 0;
+   submit.pSignalSemaphores    = NULL;
+#ifdef HAVE_THREADS
+   slock_lock(vk->context.queue_lock);
+#endif
+   res = vkQueueSubmit(vk->context.queue, 1, &submit, fence);
+#ifdef HAVE_THREADS
+   slock_unlock(vk->context.queue_lock);
+#endif
+   if (res == VK_SUCCESS)
+      vkWaitForFences(vk->context.device, 1, &fence, VK_TRUE, UINT64_MAX);
+   else
+      RARCH_WARN("[Vulkan] Could not wait for the pending swapchain acquire (%d).\n", (int)res);
+   vkDestroyFence(vk->context.device, fence, NULL);
+}
+
 static void vulkan_destroy_swapchain(gfx_ctx_vulkan_data_t *vk)
 {
    unsigned i;
@@ -2983,6 +3041,8 @@ static void vulkan_destroy_swapchain(gfx_ctx_vulkan_data_t *vk)
        * a rebuild after an out-of-date acquire, or a resize, does
        * not, and a threaded hardware core's work goes on. */
       vulkan_context_wait_frames(vk);
+      /* before the acquire semaphores are destroyed below */
+      vulkan_drain_acquire_semaphores(vk);
 #ifdef __SWITCH2__
       if (sw2_keep_swapchain_now)
       {
@@ -4627,6 +4687,11 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
    }
 
    /* If still in FIFO with no swap interval, try MAILBOX */
+#ifdef __SWITCH2__
+   /* Not on Switch 2: OunceVK's MAILBOX is emulated in software, and a
+    * MAILBOX swapchain made after a video driver restart or in the next
+    * core's NRO could die at its second acquire. FIFO it stays. */
+#else
    for (i = 0; i < present_mode_count; i++)
    {
       if (     !swap_interval
@@ -4637,6 +4702,7 @@ bool vulkan_create_swapchain(gfx_ctx_vulkan_data_t *vk,
          break;
       }
    }
+#endif
 
 #if defined(_WIN32) && !defined(__WINRT__)
    if (vk->dxgi_presenter)

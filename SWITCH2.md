@@ -1,14 +1,15 @@
 # RetroArch for Nintendo Switch 2 (libounce)
 
-A port of RetroArch to the Switch 2. It uses libounce, a libnx-compatible library from ounce-devkit, in place of libnx. Releases are drop-in zips for the SD card: see the GitHub releases.
+A port of RetroArch to the Switch 2. It uses libounce, a libnx-compatible library, in place of libnx. Releases are drop-in zips for the SD card: see the GitHub releases.
 
 ## Devkit
 
-Build with **ounce-devkit 20261115b** or later:
-- libounce, plus OunceVK (Vulkan, EGL and OpenGL ES on Zink);
-- kaiHEN, the loader. In earlier SDKs it was called OunceHEN.
+Build with **libounce 20261125** and **OunceVK 20261123.1** or later, devkitPro pacman packages from the ouncebrew releases:
+- libounce, which also installs `switch2vars.sh` and the CMake toolchain;
+- OunceVK (Vulkan, EGL and OpenGL ES on Zink), built against libounce 20261123 or later;
+- libkaihen, for kaiHEN, the loader. In earlier SDKs it was called OunceHEN.
 
-`$DEVKITPRO/ounce-devkit-version.txt` shows the installed version.
+Before these packages, ounce-devkit (20261115b to 20261117) shipped all three together. Its `$DEVKITPRO/ounce-devkit-version.txt` isn't updated by the packages. The OunceVK in a build shows in the NROs as `git-<hash>`.
 
 - Makefiles include `$(DEVKITPRO)/libounce/switch2_rules`, which defines `__SWITCH2__` and `$(SWITCH2_CPU)` (`-mcpu=cortex-a78c+crypto`). Use it with `-mtp=soft -fPIE`.
 - CMake projects use `$DEVKITPRO/libounce/cmake/Switch2.cmake`.
@@ -62,7 +63,8 @@ Each NRO finds its root folder from its own path (`argv[0]`): a core uses the pa
 - **Install folder:** `frontend/drivers/platform_switch.c` derives the root folder from `argv[0]` (the release layout's `/retroarch`, or a single-folder install's own folder) and falls back to `/retroarch` without one. `fill_pathname_application_path` returns `<root>/retroarch_switch.nro` on Switch 2, and the `:` path helpers (`libretro-common/file/file_path.c`, `config_file.c`, `playlist.c`) are enabled there.
 
 - **Vulkan:** the `vk_switch` context (`gfx/drivers_context/switch_vk_ctx.c`) on the default `NWindow` through `VK_NN_vi_surface`.
-  - OunceVK allows one vi surface per process, so the surface and its swapchain are kept across a video driver restart (`gfx/common/vulkan_common.c`). After a core has used Vulkan, RetroArch stays on Vulkan until it restarts, even when the config asks for `gl` (`gfx/video_driver.c`), because GL can't get a surface in that process any more.
+  - OunceVK allows one vi surface per process, so the surface and its swapchain are kept across a video driver restart (`gfx/common/vulkan_common.c`). Pending image acquires are waited for before the swapchain's semaphores go.
+  - V-Sync off stays on FIFO. OunceVK has no IMMEDIATE, and its MAILBOX is emulated in software: a MAILBOX swapchain made after a video driver restart, or in the next core's NRO, sometimes died at its second acquire. After a core has used Vulkan, RetroArch stays on Vulkan until it restarts, even when the config asks for `gl` (`gfx/video_driver.c`), because GL can't get a surface in that process any more.
 - **Output size:** 1920x1080 docked and in handheld mode. The window is the same size in both modes (`nwindowSetModeDimensions`). The display reports no DPI, so the menu scales from the 1080p size.
 - **Dock and undock:** the default window's VI2 layer is attached to one display. When the operation mode changes, both contexts move the layer to the new display: detach, clear the selection, attach, select (`switch_ctx_reattach_layer` in `switch_ctx.c`). Without this the TV or the handheld screen stays black.
 - **OpenGL ES 3:** the EGL context in `switch_ctx.c`, with GLES2 as a fallback.
@@ -144,6 +146,7 @@ Fixed during testing:
 - PCSX ReARMed: Gran Turismo froze while loading a race. Code it ran from the stack went stale.
 - PCSX ReARMed: without a BIOS file, Gran Turismo froze or went black loading a race, every time with the compile thread off and sometimes with it on. Fixed in v0.4.1.
 - Frontend: after docking or undocking, the new screen stayed black. Handheld mode ran at 720p with an oversized menu. Returning from a Vulkan core to a GL menu froze. Fixed in v0.4.1.
+- Frontend: with Vulkan, V-Sync off and Threaded Video off, loading a game again with the same core sometimes ended in "An error occurred" (issue #5). Fixed by staying on FIFO, see above.
 - PicoDrive: 32X games crashed. The SH2 dynarec now runs on the JIT.
 - Mupen64Plus-Next: Paper Mario's textures were wrong.
 - Mupen64Plus-Next: Conker's Bad Fur Day ran at about half speed in its heaviest scenes. Full speed since v0.3.1.
